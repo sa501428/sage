@@ -1,0 +1,1839 @@
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("workspaceCanvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const frame = document.querySelector(".canvas-frame");
+  const DPR = () => window.devicePixelRatio || 1;
+
+  const defaultAdjustments = () => ({
+    brightness: 0,
+    contrast: 0,
+    gamma: 1,
+    saturation: 1,
+    grayscale: false,
+    invert: false,
+    sharpen: 0,
+    denoise: 0,
+    backgroundSubtract: 0,
+    rotation: 0,
+    crop: null,
+    flipX: false,
+    flipY: false
+  });
+
+  const state = {
+    image: null,
+    adjustments: defaultAdjustments(),
+    view: { zoom: 1, panX: 40, panY: 40 },
+    tool: "select",
+    annotations: [],
+    overlays: [],
+    signatures: createDefaultSignatures(),
+    results: [],
+    selected: null,
+    draft: null,
+    dragging: null,
+    layerVisibility: {
+      processed: true,
+      originalInset: true,
+      annotations: true,
+      overlays: true
+    },
+    history: [],
+    historyIndex: -1
+  };
+
+  const els = {
+    imageInput: $("imageInput"),
+    overlayImageInput: $("overlayImageInput"),
+    projectImportInput: $("projectImportInput"),
+    signatureImportInput: $("signatureImportInput"),
+    imageMeta: $("imageMeta"),
+    cursorReadout: $("cursorReadout"),
+    zoomReadout: $("zoomReadout"),
+    layerList: $("layerList"),
+    resultsList: $("resultsList"),
+    signatureSearch: $("signatureSearch"),
+    signatureSelect: $("signatureSelect"),
+    signatureEditor: $("signatureEditor"),
+    annotationLabel: $("annotationLabel"),
+    annotationColor: $("annotationColor")
+  };
+
+  const adjustmentIds = [
+    "brightness",
+    "contrast",
+    "gamma",
+    "saturation",
+    "sharpen",
+    "denoise",
+    "backgroundSubtract",
+    "grayscale",
+    "invert",
+    "flipX",
+    "flipY",
+    "rotation"
+  ];
+
+  function createDefaultSignatures() {
+    return [
+      {
+        id: id("sig"),
+        name: "Example three-lane ladder",
+        category: "Reference",
+        species: "",
+        product: "Demo",
+        gene: "",
+        diagnosticTarget: "Demonstration pattern",
+        notes: "Normalized lane and band positions. Replace with lab-validated signatures.",
+        lanes: [
+          {
+            id: id("lane"),
+            label: "L1",
+            xPosition: 0.22,
+            bands: [
+              { id: id("band"), yPosition: 0.18, expectedIntensity: 0.8, tolerance: 0.035, label: "A" },
+              { id: id("band"), yPosition: 0.42, expectedIntensity: 1, tolerance: 0.04, label: "B" },
+              { id: id("band"), yPosition: 0.71, expectedIntensity: 0.5, tolerance: 0.045, label: "C" }
+            ]
+          },
+          {
+            id: id("lane"),
+            label: "L2",
+            xPosition: 0.5,
+            bands: [
+              { id: id("band"), yPosition: 0.24, expectedIntensity: 0.65, tolerance: 0.04, label: "D" },
+              { id: id("band"), yPosition: 0.56, expectedIntensity: 1, tolerance: 0.04, label: "E" }
+            ]
+          },
+          {
+            id: id("lane"),
+            label: "L3",
+            xPosition: 0.77,
+            bands: [
+              { id: id("band"), yPosition: 0.32, expectedIntensity: 0.7, tolerance: 0.04, label: "F" },
+              { id: id("band"), yPosition: 0.67, expectedIntensity: 0.85, tolerance: 0.045, label: "G" }
+            ]
+          }
+        ],
+        metadata: { coordinateSystem: "normalized" }
+      }
+    ];
+  }
+
+  function id(prefix) {
+    if (window.crypto && crypto.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function activeImageCanvas() {
+    return state.image ? state.image.processedCanvas : null;
+  }
+
+  function imageSize() {
+    const img = activeImageCanvas();
+    return img ? { width: img.width, height: img.height } : { width: 1, height: 1 };
+  }
+
+  function fileSize(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  }
+
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function loadImageElement(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("The browser could not decode that image."));
+      img.src = src;
+    });
+  }
+
+  async function loadImageFromFile(file) {
+    const dataUrl = await fileToDataUrl(file);
+    const imageEl = await loadImageElement(dataUrl);
+    const originalCanvas = document.createElement("canvas");
+    originalCanvas.width = imageEl.naturalWidth;
+    originalCanvas.height = imageEl.naturalHeight;
+    originalCanvas.getContext("2d").drawImage(imageEl, 0, 0);
+
+    state.image = {
+      fileName: file.name,
+      fileSize: file.size,
+      type: file.type || "unknown",
+      width: imageEl.naturalWidth,
+      height: imageEl.naturalHeight,
+      dataUrl,
+      element: imageEl,
+      originalCanvas,
+      processedCanvas: document.createElement("canvas")
+    };
+    state.adjustments = defaultAdjustments();
+    syncAdjustmentInputs();
+    renderProcessedImage();
+    fitToScreen();
+    pushHistory("load image");
+    updateAll();
+  }
+
+  function createWorkingImage(original) {
+    const copy = document.createElement("canvas");
+    copy.width = original.width;
+    copy.height = original.height;
+    copy.getContext("2d").drawImage(original, 0, 0);
+    return copy;
+  }
+
+  function resetToOriginal() {
+    state.adjustments = defaultAdjustments();
+    syncAdjustmentInputs();
+    renderProcessedImage();
+    fitToScreen();
+    pushHistory("reset image");
+    updateAll();
+  }
+
+  function renderProcessedImage() {
+    if (!state.image) return;
+    const original = state.image.originalCanvas;
+    const a = state.adjustments;
+    const crop = normalizeCrop(a.crop, original.width, original.height);
+    const rotate = Number(a.rotation) % 360;
+    const rightAngle = rotate === 90 || rotate === 270;
+    const out = state.image.processedCanvas;
+    out.width = rightAngle ? crop.height : crop.width;
+    out.height = rightAngle ? crop.width : crop.height;
+
+    const outCtx = out.getContext("2d", { willReadFrequently: true });
+    outCtx.save();
+    outCtx.clearRect(0, 0, out.width, out.height);
+    outCtx.translate(out.width / 2, out.height / 2);
+    outCtx.rotate((rotate * Math.PI) / 180);
+    outCtx.scale(a.flipX ? -1 : 1, a.flipY ? -1 : 1);
+    outCtx.drawImage(
+      original,
+      crop.x,
+      crop.y,
+      crop.width,
+      crop.height,
+      -crop.width / 2,
+      -crop.height / 2,
+      crop.width,
+      crop.height
+    );
+    outCtx.restore();
+
+    let imageData = outCtx.getImageData(0, 0, out.width, out.height);
+    if (a.denoise > 0) imageData = convolve(imageData, blurKernel(a.denoise / 100));
+    imageData = applyPixelAdjustments(imageData, a);
+    if (a.sharpen > 0) imageData = convolve(imageData, sharpenKernel(a.sharpen / 100));
+    outCtx.putImageData(imageData, 0, 0);
+  }
+
+  function normalizeCrop(crop, width, height) {
+    if (!crop) return { x: 0, y: 0, width, height };
+    const x = clamp(Math.round(crop.x || 0), 0, width - 1);
+    const y = clamp(Math.round(crop.y || 0), 0, height - 1);
+    const w = clamp(Math.round(crop.width || width), 1, width - x);
+    const h = clamp(Math.round(crop.height || height), 1, height - y);
+    return { x, y, width: w, height: h };
+  }
+
+  function applyPixelAdjustments(imageData, a) {
+    const data = imageData.data;
+    const brightness = Number(a.brightness) || 0;
+    const contrast = ((Number(a.contrast) || 0) + 100) / 100;
+    const gamma = Math.max(0.05, Number(a.gamma) || 1);
+    const saturation = Math.max(0, Number(a.saturation) || 1);
+    const bg = Number(a.backgroundSubtract) || 0;
+    const gammaInv = 1 / gamma;
+    const avg = bg > 0 ? averageLuminance(data) : 0;
+    const subtract = avg * (bg / 100) * 0.85;
+
+    for (let i = 0; i < data.length; i += 4) {
+      let r = data[i];
+      let g = data[i + 1];
+      let b = data[i + 2];
+
+      if (subtract) {
+        r -= subtract;
+        g -= subtract;
+        b -= subtract;
+      }
+
+      r = ((r - 128) * contrast) + 128 + brightness;
+      g = ((g - 128) * contrast) + 128 + brightness;
+      b = ((b - 128) * contrast) + 128 + brightness;
+
+      r = 255 * Math.pow(clamp(r, 0, 255) / 255, gammaInv);
+      g = 255 * Math.pow(clamp(g, 0, 255) / 255, gammaInv);
+      b = 255 * Math.pow(clamp(b, 0, 255) / 255, gammaInv);
+
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (a.grayscale) {
+        r = lum;
+        g = lum;
+        b = lum;
+      } else if (saturation !== 1) {
+        r = lum + (r - lum) * saturation;
+        g = lum + (g - lum) * saturation;
+        b = lum + (b - lum) * saturation;
+      }
+
+      if (a.invert) {
+        r = 255 - r;
+        g = 255 - g;
+        b = 255 - b;
+      }
+
+      data[i] = clamp(r, 0, 255);
+      data[i + 1] = clamp(g, 0, 255);
+      data[i + 2] = clamp(b, 0, 255);
+    }
+    return imageData;
+  }
+
+  function averageLuminance(data) {
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 16) {
+      sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+    }
+    return sum / (data.length / 16);
+  }
+
+  function blurKernel(amount) {
+    const edge = amount * 0.12;
+    const center = 1 - edge * 8;
+    return [edge, edge, edge, edge, center, edge, edge, edge, edge];
+  }
+
+  function sharpenKernel(amount) {
+    const side = -amount;
+    const center = 1 + amount * 4;
+    return [0, side, 0, side, center, side, 0, side, 0];
+  }
+
+  function convolve(imageData, kernel) {
+    const { width, height, data } = imageData;
+    const copy = new Uint8ClampedArray(data);
+    const side = 3;
+    const half = 1;
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const dst = (y * width + x) * 4;
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        for (let ky = 0; ky < side; ky += 1) {
+          for (let kx = 0; kx < side; kx += 1) {
+            const px = clamp(x + kx - half, 0, width - 1);
+            const py = clamp(y + ky - half, 0, height - 1);
+            const src = (py * width + px) * 4;
+            const weight = kernel[ky * side + kx];
+            r += copy[src] * weight;
+            g += copy[src + 1] * weight;
+            b += copy[src + 2] * weight;
+          }
+        }
+        data[dst] = clamp(r, 0, 255);
+        data[dst + 1] = clamp(g, 0, 255);
+        data[dst + 2] = clamp(b, 0, 255);
+      }
+    }
+    return imageData;
+  }
+
+  function resizeWorkspace() {
+    const rect = frame.getBoundingClientRect();
+    const dpr = DPR();
+    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    canvas.style.width = `${rect.width}px`;
+    canvas.style.height = `${rect.height}px`;
+    draw();
+  }
+
+  function fitToScreen() {
+    const img = activeImageCanvas();
+    if (!img) return;
+    const rect = frame.getBoundingClientRect();
+    const zoom = Math.min(rect.width / img.width, rect.height / img.height) * 0.92;
+    state.view.zoom = clamp(zoom, 0.03, 20);
+    state.view.panX = (rect.width - img.width * state.view.zoom) / 2;
+    state.view.panY = (rect.height - img.height * state.view.zoom) / 2;
+  }
+
+  function actualSize() {
+    state.view.zoom = 1;
+    state.view.panX = 40;
+    state.view.panY = 40;
+    draw();
+  }
+
+  function screenToImage(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const sx = clientX - rect.left;
+    const sy = clientY - rect.top;
+    return {
+      x: (sx - state.view.panX) / state.view.zoom,
+      y: (sy - state.view.panY) / state.view.zoom,
+      sx,
+      sy
+    };
+  }
+
+  function imageToScreen(point) {
+    return {
+      x: point.x * state.view.zoom + state.view.panX,
+      y: point.y * state.view.zoom + state.view.panY
+    };
+  }
+
+  function draw() {
+    const dpr = DPR();
+    const width = canvas.width / dpr;
+    const height = canvas.height / dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#dfe5e9";
+    ctx.fillRect(0, 0, width, height);
+
+    const img = activeImageCanvas();
+    if (!img) {
+      drawEmptyState(width, height);
+      return;
+    }
+
+    ctx.save();
+    ctx.translate(state.view.panX, state.view.panY);
+    ctx.scale(state.view.zoom, state.view.zoom);
+    ctx.imageSmoothingEnabled = false;
+
+    if (state.layerVisibility.processed) {
+      ctx.drawImage(img, 0, 0);
+    } else {
+      ctx.drawImage(state.image.originalCanvas, 0, 0, img.width, img.height);
+    }
+
+    if (state.layerVisibility.overlays) drawOverlays(ctx);
+    if (state.layerVisibility.annotations) drawAnnotations(ctx);
+    if (state.draft) drawAnnotation(ctx, state.draft, true);
+
+    ctx.restore();
+    drawSelectionOutline();
+    if (state.layerVisibility.originalInset) drawOriginalInset(width, height);
+
+    els.zoomReadout.textContent = `${Math.round(state.view.zoom * 100)}%`;
+  }
+
+  function drawEmptyState(width, height) {
+    ctx.save();
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "#cfd8df";
+    ctx.lineWidth = 1;
+    const boxW = Math.min(420, width - 48);
+    const boxH = 140;
+    const x = (width - boxW) / 2;
+    const y = (height - boxH) / 2;
+    ctx.fillRect(x, y, boxW, boxH);
+    ctx.strokeRect(x, y, boxW, boxH);
+    ctx.fillStyle = "#172026";
+    ctx.font = "700 18px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Upload a gel image to begin", width / 2, y + 56);
+    ctx.fillStyle = "#66727c";
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.fillText("All processing stays local in this browser.", width / 2, y + 84);
+    ctx.restore();
+  }
+
+  function drawOriginalInset(width, height) {
+    if (!state.image) return;
+    const original = state.image.originalCanvas;
+    const maxW = Math.min(220, width * 0.28);
+    const maxH = Math.min(160, height * 0.25);
+    const scale = Math.min(maxW / original.width, maxH / original.height);
+    const w = original.width * scale;
+    const h = original.height * scale;
+    const x = width - w - 18;
+    const y = 18;
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillRect(x - 8, y - 24, w + 16, h + 32);
+    ctx.strokeStyle = "#cfd8df";
+    ctx.strokeRect(x - 8, y - 24, w + 16, h + 32);
+    ctx.fillStyle = "#172026";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.fillText("Original", x, y - 8);
+    ctx.drawImage(original, x, y, w, h);
+    ctx.restore();
+  }
+
+  function drawAnnotations(targetCtx) {
+    state.annotations.filter((a) => a.visible).forEach((annotation) => {
+      drawAnnotation(targetCtx, annotation, state.selected && state.selected.id === annotation.id);
+    });
+  }
+
+  function drawAnnotation(targetCtx, annotation, selected = false) {
+    const color = annotation.color || "#16a34a";
+    targetCtx.save();
+    targetCtx.strokeStyle = color;
+    targetCtx.fillStyle = color;
+    targetCtx.lineWidth = selected ? 3 / state.view.zoom : 2 / state.view.zoom;
+    targetCtx.setLineDash(selected ? [8 / state.view.zoom, 5 / state.view.zoom] : []);
+    const p = annotation.points || [];
+    if (annotation.type === "lane" || annotation.type === "band" || annotation.type === "line") {
+      if (p.length >= 2) {
+        targetCtx.beginPath();
+        targetCtx.moveTo(p[0].x, p[0].y);
+        targetCtx.lineTo(p[1].x, p[1].y);
+        targetCtx.stroke();
+      }
+    } else if (annotation.type === "rect") {
+      const r = rectFromPoints(p[0], p[1]);
+      targetCtx.strokeRect(r.x, r.y, r.width, r.height);
+      targetCtx.globalAlpha = 0.08;
+      targetCtx.fillRect(r.x, r.y, r.width, r.height);
+    } else if (annotation.type === "label") {
+      const label = annotation.label || "Label";
+      targetCtx.font = `${Math.max(12 / state.view.zoom, 11)}px system-ui, sans-serif`;
+      targetCtx.lineWidth = 4 / state.view.zoom;
+      targetCtx.strokeStyle = "rgba(255,255,255,0.9)";
+      targetCtx.strokeText(label, p[0].x, p[0].y);
+      targetCtx.fillText(label, p[0].x, p[0].y);
+    }
+    if (annotation.label && annotation.type !== "label" && p.length) {
+      targetCtx.setLineDash([]);
+      targetCtx.font = `${Math.max(11 / state.view.zoom, 10)}px system-ui, sans-serif`;
+      targetCtx.lineWidth = 4 / state.view.zoom;
+      targetCtx.strokeStyle = "rgba(255,255,255,0.9)";
+      targetCtx.strokeText(annotation.label, p[0].x + 5 / state.view.zoom, p[0].y - 5 / state.view.zoom);
+      targetCtx.fillStyle = color;
+      targetCtx.fillText(annotation.label, p[0].x + 5 / state.view.zoom, p[0].y - 5 / state.view.zoom);
+    }
+    targetCtx.restore();
+  }
+
+  function drawOverlays(targetCtx) {
+    const overlays = [...state.overlays].sort((a, b) => a.zIndex - b.zIndex);
+    overlays.filter((overlay) => overlay.visible).forEach((overlay) => drawOverlay(targetCtx, overlay));
+  }
+
+  function drawOverlay(targetCtx, overlay) {
+    targetCtx.save();
+    targetCtx.globalAlpha = overlay.opacity;
+    targetCtx.translate(overlay.x, overlay.y);
+    targetCtx.rotate((overlay.rotation * Math.PI) / 180);
+    targetCtx.transform(1, 0, Math.tan((overlay.skewX || 0) * Math.PI / 180), 1, 0, 0);
+    targetCtx.scale(overlay.scaleX, overlay.scaleY);
+
+    if (overlay.type === "image" && overlay.imageElement) {
+      targetCtx.drawImage(overlay.imageElement, 0, 0, overlay.width, overlay.height);
+    } else if (overlay.type === "signature") {
+      drawSignatureShape(targetCtx, overlay.signature, overlay.width, overlay.height);
+    }
+
+    targetCtx.restore();
+  }
+
+  function drawSignatureShape(targetCtx, signature, width, height) {
+    targetCtx.save();
+    targetCtx.strokeStyle = "#b85b2b";
+    targetCtx.fillStyle = "#b85b2b";
+    targetCtx.lineWidth = 2;
+    targetCtx.font = "13px system-ui, sans-serif";
+    signature.lanes.forEach((lane) => {
+      const x = normalizePosition(lane.xPosition, width);
+      targetCtx.beginPath();
+      targetCtx.moveTo(x, 0);
+      targetCtx.lineTo(x, height);
+      targetCtx.stroke();
+      targetCtx.fillText(lane.label || "Lane", x + 6, 15);
+      lane.bands.forEach((band) => {
+        const y = normalizePosition(band.yPosition, height);
+        const bandW = Math.max(width * 0.08, 22);
+        targetCtx.beginPath();
+        targetCtx.moveTo(x - bandW / 2, y);
+        targetCtx.lineTo(x + bandW / 2, y);
+        targetCtx.stroke();
+        if (band.label) targetCtx.fillText(band.label, x + bandW / 2 + 4, y + 4);
+      });
+    });
+    targetCtx.restore();
+  }
+
+  function drawSelectionOutline() {
+    if (!state.selected || state.selected.kind !== "overlay") return;
+    const overlay = state.overlays.find((item) => item.id === state.selected.id);
+    if (!overlay) return;
+    const dpr = DPR();
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const corners = overlayScreenCorners(overlay);
+    ctx.strokeStyle = "#256f82";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    corners.forEach((p, index) => {
+      if (index === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function overlayScreenCorners(overlay) {
+    const points = [
+      { x: 0, y: 0 },
+      { x: overlay.width, y: 0 },
+      { x: overlay.width, y: overlay.height },
+      { x: 0, y: overlay.height }
+    ];
+    const rad = overlay.rotation * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    return points.map((p) => {
+      const skewedX = p.x + Math.tan((overlay.skewX || 0) * Math.PI / 180) * p.y;
+      const sx = skewedX * overlay.scaleX;
+      const sy = p.y * overlay.scaleY;
+      const x = overlay.x + sx * cos - sy * sin;
+      const y = overlay.y + sx * sin + sy * cos;
+      return imageToScreen({ x, y });
+    });
+  }
+
+  function rectFromPoints(a, b) {
+    return {
+      x: Math.min(a.x, b.x),
+      y: Math.min(a.y, b.y),
+      width: Math.abs(a.x - b.x),
+      height: Math.abs(a.y - b.y)
+    };
+  }
+
+  function normalizePosition(value, extent) {
+    return Math.abs(value) <= 1 ? value * extent : value;
+  }
+
+  function makeAnnotation(type, start, end) {
+    const size = imageSize();
+    let points = [start, end];
+    if (type === "lane") {
+      const x = Math.abs(start.x - end.x) < 4 ? start.x : end.x;
+      points = [{ x, y: 0 }, { x, y: size.height }];
+    } else if (type === "band") {
+      const y = Math.abs(start.y - end.y) < 4 ? start.y : end.y;
+      points = [{ x: 0, y }, { x: size.width, y }];
+    } else if (type === "label") {
+      points = [start];
+    }
+    return {
+      id: id("ann"),
+      type,
+      points: points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })),
+      label: els.annotationLabel.value.trim(),
+      color: els.annotationColor.value,
+      confidence: 1,
+      visible: true,
+      locked: false
+    };
+  }
+
+  function findAnnotationAt(point) {
+    const tolerance = 8 / state.view.zoom;
+    for (let i = state.annotations.length - 1; i >= 0; i -= 1) {
+      const ann = state.annotations[i];
+      if (!ann.visible) continue;
+      if (ann.type === "rect") {
+        const r = rectFromPoints(ann.points[0], ann.points[1]);
+        const inside = point.x >= r.x - tolerance && point.x <= r.x + r.width + tolerance &&
+          point.y >= r.y - tolerance && point.y <= r.y + r.height + tolerance;
+        if (inside) return ann;
+      } else if (ann.type === "label") {
+        const p = ann.points[0];
+        if (Math.hypot(point.x - p.x, point.y - p.y) <= tolerance * 2) return ann;
+      } else if (ann.points.length >= 2 && distanceToSegment(point, ann.points[0], ann.points[1]) <= tolerance) {
+        return ann;
+      }
+    }
+    return null;
+  }
+
+  function distanceToSegment(p, a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    if (dx === 0 && dy === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+    const t = clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy), 0, 1);
+    return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+  }
+
+  function findOverlayAt(point) {
+    for (let i = state.overlays.length - 1; i >= 0; i -= 1) {
+      const overlay = state.overlays[i];
+      if (!overlay.visible) continue;
+      const corners = overlayImageCorners(overlay);
+      if (pointInPolygon(point, corners)) return overlay;
+    }
+    return null;
+  }
+
+  function overlayImageCorners(overlay) {
+    const points = [
+      { x: 0, y: 0 },
+      { x: overlay.width, y: 0 },
+      { x: overlay.width, y: overlay.height },
+      { x: 0, y: overlay.height }
+    ];
+    const rad = overlay.rotation * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    return points.map((p) => {
+      const skewedX = p.x + Math.tan((overlay.skewX || 0) * Math.PI / 180) * p.y;
+      const sx = skewedX * overlay.scaleX;
+      const sy = p.y * overlay.scaleY;
+      return {
+        x: overlay.x + sx * cos - sy * sin,
+        y: overlay.y + sx * sin + sy * cos
+      };
+    });
+  }
+
+  function pointInPolygon(point, polygon) {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+      const xi = polygon[i].x;
+      const yi = polygon[i].y;
+      const xj = polygon[j].x;
+      const yj = polygon[j].y;
+      const intersect = yi > point.y !== yj > point.y &&
+        point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi;
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  function onPointerDown(event) {
+    const point = screenToImage(event.clientX, event.clientY);
+    if (state.tool === "pan" || event.button === 1 || event.altKey) {
+      state.dragging = { type: "pan", sx: point.sx, sy: point.sy, panX: state.view.panX, panY: state.view.panY };
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    if (!state.image) return;
+
+    if (state.tool === "select") {
+      const annotation = findAnnotationAt(point);
+      if (annotation) {
+        state.selected = { kind: "annotation", id: annotation.id };
+        if (!annotation.locked) {
+          state.dragging = { type: "annotation", id: annotation.id, start: point, original: clone(annotation.points) };
+        }
+      } else {
+        const overlay = findOverlayAt(point);
+        if (overlay) {
+          state.selected = { kind: "overlay", id: overlay.id };
+          if (!overlay.locked) {
+            state.dragging = { type: "overlay", id: overlay.id, start: point, x: overlay.x, y: overlay.y };
+          }
+        } else {
+          state.selected = null;
+        }
+      }
+      syncSelectedControls();
+      updateLayerList();
+      draw();
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    const clamped = clampPoint(point);
+    if (state.tool === "label") {
+      const label = els.annotationLabel.value.trim() || window.prompt("Annotation label", "Label") || "Label";
+      els.annotationLabel.value = label;
+      const ann = makeAnnotation("label", clamped, clamped);
+      state.annotations.push(ann);
+      state.selected = { kind: "annotation", id: ann.id };
+      pushHistory("label annotation");
+      updateAll();
+      return;
+    }
+
+    state.draft = makeAnnotation(state.tool, clamped, clamped);
+    state.dragging = { type: "draw", start: clamped };
+    canvas.setPointerCapture(event.pointerId);
+    draw();
+  }
+
+  function onPointerMove(event) {
+    const point = screenToImage(event.clientX, event.clientY);
+    els.cursorReadout.textContent = `x ${Math.round(point.x)}, y ${Math.round(point.y)}`;
+
+    if (!state.dragging) return;
+
+    if (state.dragging.type === "pan") {
+      state.view.panX = state.dragging.panX + (point.sx - state.dragging.sx);
+      state.view.panY = state.dragging.panY + (point.sy - state.dragging.sy);
+    } else if (state.dragging.type === "draw" && state.draft) {
+      const end = clampPoint(point);
+      state.draft = makeAnnotation(state.draft.type, state.dragging.start, end);
+    } else if (state.dragging.type === "annotation") {
+      const ann = state.annotations.find((item) => item.id === state.dragging.id);
+      if (ann) {
+        const dx = point.x - state.dragging.start.x;
+        const dy = point.y - state.dragging.start.y;
+        ann.points = state.dragging.original.map((p) => clampPoint({ x: p.x + dx, y: p.y + dy }));
+      }
+    } else if (state.dragging.type === "overlay") {
+      const overlay = state.overlays.find((item) => item.id === state.dragging.id);
+      if (overlay) {
+        overlay.x = Math.round(state.dragging.x + point.x - state.dragging.start.x);
+        overlay.y = Math.round(state.dragging.y + point.y - state.dragging.start.y);
+        syncSelectedControls();
+      }
+    }
+
+    draw();
+  }
+
+  function onPointerUp(event) {
+    if (!state.dragging) return;
+    if (state.dragging.type === "draw" && state.draft) {
+      state.annotations.push(state.draft);
+      state.selected = { kind: "annotation", id: state.draft.id };
+      state.draft = null;
+      pushHistory("draw annotation");
+      updateAll();
+    } else if (state.dragging.type === "annotation" || state.dragging.type === "overlay") {
+      pushHistory("move object");
+      updateAll();
+    } else {
+      draw();
+    }
+    state.dragging = null;
+    try {
+      canvas.releasePointerCapture(event.pointerId);
+    } catch (_) {
+      // Pointer capture can already be released by the browser.
+    }
+  }
+
+  function onWheel(event) {
+    if (!state.image) return;
+    event.preventDefault();
+    const point = screenToImage(event.clientX, event.clientY);
+    const factor = event.deltaY < 0 ? 1.12 : 0.89;
+    const nextZoom = clamp(state.view.zoom * factor, 0.03, 30);
+    state.view.panX = point.sx - point.x * nextZoom;
+    state.view.panY = point.sy - point.y * nextZoom;
+    state.view.zoom = nextZoom;
+    draw();
+  }
+
+  function clampPoint(point) {
+    const size = imageSize();
+    return {
+      x: clamp(Math.round(point.x), 0, size.width),
+      y: clamp(Math.round(point.y), 0, size.height)
+    };
+  }
+
+  function selectedObject() {
+    if (!state.selected) return null;
+    if (state.selected.kind === "annotation") return state.annotations.find((item) => item.id === state.selected.id) || null;
+    if (state.selected.kind === "overlay") return state.overlays.find((item) => item.id === state.selected.id) || null;
+    return null;
+  }
+
+  async function addOverlayImage(file) {
+    const dataUrl = await fileToDataUrl(file);
+    const img = await loadImageElement(dataUrl);
+    const size = imageSize();
+    const scale = Math.min(size.width / img.naturalWidth, size.height / img.naturalHeight, 1) * 0.6;
+    const overlay = {
+      id: id("ovr"),
+      type: "image",
+      source: "upload",
+      name: file.name,
+      visible: true,
+      locked: false,
+      opacity: 0.8,
+      x: Math.round(size.width * 0.2),
+      y: Math.round(size.height * 0.2),
+      scaleX: scale,
+      scaleY: scale,
+      rotation: 0,
+      skewX: 0,
+      skewY: 0,
+      zIndex: nextZ(),
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+      dataUrl,
+      imageElement: img,
+      data: {}
+    };
+    state.overlays.push(overlay);
+    state.selected = { kind: "overlay", id: overlay.id };
+    pushHistory("add overlay image");
+    updateAll();
+  }
+
+  function addOverlayFromSignature(signature) {
+    if (!signature || !state.image) return;
+    const size = imageSize();
+    const overlay = {
+      id: id("ovr"),
+      type: "signature",
+      source: "signature-library",
+      name: signature.name,
+      visible: true,
+      locked: false,
+      opacity: 0.8,
+      x: 0,
+      y: 0,
+      scaleX: 1,
+      scaleY: 1,
+      rotation: 0,
+      skewX: 0,
+      skewY: 0,
+      zIndex: nextZ(),
+      width: size.width,
+      height: size.height,
+      signature: clone(signature),
+      data: { signatureId: signature.id }
+    };
+    state.overlays.push(overlay);
+    state.selected = { kind: "overlay", id: overlay.id };
+    pushHistory("add signature overlay");
+    updateAll();
+  }
+
+  function nextZ() {
+    const max = state.overlays.reduce((acc, item) => Math.max(acc, item.zIndex), 0);
+    return max + 1;
+  }
+
+  function updateLayerList() {
+    const items = [];
+    state.overlays
+      .slice()
+      .sort((a, b) => b.zIndex - a.zIndex)
+      .forEach((overlay) => items.push({
+        id: overlay.id,
+        kind: "overlay",
+        title: overlay.name,
+        meta: `${overlay.type} · ${overlay.visible ? "visible" : "hidden"} · z ${overlay.zIndex}`
+      }));
+    state.annotations
+      .slice()
+      .reverse()
+      .forEach((ann) => items.push({
+        id: ann.id,
+        kind: "annotation",
+        title: ann.label || ann.type,
+        meta: `${ann.type} · ${ann.visible ? "visible" : "hidden"}${ann.locked ? " · locked" : ""}`
+      }));
+
+    els.layerList.innerHTML = "";
+    if (!items.length) {
+      els.layerList.innerHTML = `<div class="meta-list">No overlay or annotation layers yet.</div>`;
+      return;
+    }
+
+    items.forEach((item) => {
+      const node = document.createElement("div");
+      node.className = `layer-item ${state.selected && state.selected.id === item.id ? "selected" : ""}`;
+      node.tabIndex = 0;
+      node.innerHTML = `<strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.meta)}</span>`;
+      node.addEventListener("click", () => {
+        state.selected = { kind: item.kind, id: item.id };
+        syncSelectedControls();
+        updateLayerList();
+        draw();
+      });
+      els.layerList.appendChild(node);
+    });
+  }
+
+  function updateSignatureList() {
+    const query = els.signatureSearch.value.trim().toLowerCase();
+    const selected = els.signatureSelect.value || (state.signatures[0] && state.signatures[0].id);
+    els.signatureSelect.innerHTML = "";
+    state.signatures
+      .filter((sig) => !query || JSON.stringify(sig).toLowerCase().includes(query))
+      .forEach((sig) => {
+        const option = document.createElement("option");
+        option.value = sig.id;
+        option.textContent = sig.name;
+        els.signatureSelect.appendChild(option);
+      });
+    if ([...els.signatureSelect.options].some((opt) => opt.value === selected)) {
+      els.signatureSelect.value = selected;
+    } else if (els.signatureSelect.options.length) {
+      els.signatureSelect.selectedIndex = 0;
+    }
+    updateSignatureEditor();
+  }
+
+  function selectedSignature() {
+    return state.signatures.find((sig) => sig.id === els.signatureSelect.value) || null;
+  }
+
+  function updateSignatureEditor() {
+    const sig = selectedSignature();
+    els.signatureEditor.value = sig ? JSON.stringify(sig, null, 2) : "";
+  }
+
+  function saveSignatureFromEditor() {
+    let parsed;
+    try {
+      parsed = JSON.parse(els.signatureEditor.value);
+      validateSignature(parsed);
+    } catch (error) {
+      alert(`Signature JSON is invalid: ${error.message}`);
+      return;
+    }
+    const existing = state.signatures.findIndex((sig) => sig.id === parsed.id);
+    if (existing >= 0) state.signatures[existing] = parsed;
+    else state.signatures.push(parsed);
+    pushHistory("save signature");
+    updateSignatureList();
+  }
+
+  function validateSignature(signature) {
+    if (!signature || typeof signature !== "object") throw new Error("expected an object");
+    if (!signature.id) signature.id = id("sig");
+    if (!signature.name) throw new Error("missing name");
+    if (!Array.isArray(signature.lanes)) throw new Error("missing lanes array");
+    signature.lanes.forEach((lane) => {
+      if (!lane.id) lane.id = id("lane");
+      if (!Array.isArray(lane.bands)) lane.bands = [];
+      lane.bands.forEach((band) => {
+        if (!band.id) band.id = id("band");
+      });
+    });
+  }
+
+  function makeSignatureFromAnnotations() {
+    if (!state.image) {
+      alert("Load an image before generating a signature from annotations.");
+      return;
+    }
+    const size = imageSize();
+    const lanes = state.annotations
+      .filter((ann) => ann.type === "lane" && ann.visible)
+      .map((ann, index) => ({
+        id: id("lane"),
+        label: ann.label || `Lane ${index + 1}`,
+        xPosition: clamp(ann.points[0].x / size.width, 0, 1),
+        bands: []
+      }))
+      .sort((a, b) => a.xPosition - b.xPosition);
+
+    if (!lanes.length) {
+      lanes.push({ id: id("lane"), label: "Lane 1", xPosition: 0.5, bands: [] });
+    }
+
+    const bandAnnotations = state.annotations.filter((ann) => ann.type === "band" && ann.visible);
+    bandAnnotations.forEach((ann, index) => {
+      const y = clamp(ann.points[0].y / size.height, 0, 1);
+      const nearestLane = nearestLaneForBand(ann, lanes, size);
+      nearestLane.bands.push({
+        id: id("band"),
+        yPosition: y,
+        expectedIntensity: 1,
+        tolerance: 0.04,
+        label: ann.label || `Band ${index + 1}`
+      });
+    });
+
+    lanes.forEach((lane) => lane.bands.sort((a, b) => a.yPosition - b.yPosition));
+    const name = window.prompt("Signature name", `Observed ${new Date().toISOString().slice(0, 10)}`) || "Observed signature";
+    const signature = {
+      id: id("sig"),
+      name,
+      category: "Observed",
+      notes: "Generated from manual SAGE annotations.",
+      lanes,
+      metadata: { coordinateSystem: "normalized", generatedBy: "SAGE annotation tools" }
+    };
+    state.signatures.push(signature);
+    pushHistory("generate signature");
+    updateSignatureList();
+    els.signatureSelect.value = signature.id;
+    updateSignatureEditor();
+    addOverlayFromSignature(signature);
+  }
+
+  function nearestLaneForBand(ann, lanes, size) {
+    const y = ann.points[0].y;
+    const candidates = state.annotations.filter((item) => item.type === "lane" && item.visible);
+    if (!candidates.length) return lanes[0];
+    const bandMid = { x: size.width / 2, y };
+    let bestIndex = 0;
+    let bestDist = Infinity;
+    candidates.forEach((laneAnn, index) => {
+      const dist = distanceToSegment(bandMid, laneAnn.points[0], laneAnn.points[1]);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIndex = index;
+      }
+    });
+    return lanes[Math.min(bestIndex, lanes.length - 1)];
+  }
+
+  function compareSignatures() {
+    if (!state.image) {
+      alert("Load an image and annotate lanes/bands before comparing.");
+      return;
+    }
+    const observed = observedSignatureFromAnnotations();
+    const results = state.signatures.map((signature) => scoreSignature(observed, signature));
+    results.sort((a, b) => b.score - a.score);
+    state.results = results;
+    updateResults();
+  }
+
+  function observedSignatureFromAnnotations() {
+    const size = imageSize();
+    const laneAnnotations = state.annotations
+      .filter((ann) => ann.type === "lane" && ann.visible)
+      .sort((a, b) => a.points[0].x - b.points[0].x);
+    const lanes = laneAnnotations.length
+      ? laneAnnotations.map((ann, index) => ({
+          id: ann.id,
+          label: ann.label || `Lane ${index + 1}`,
+          xPosition: ann.points[0].x / size.width,
+          bands: []
+        }))
+      : [{ id: "observed-lane", label: "Observed", xPosition: 0.5, bands: [] }];
+
+    state.annotations.filter((ann) => ann.type === "band" && ann.visible).forEach((ann, index) => {
+      const lane = nearestLaneForBand(ann, lanes, size);
+      lane.bands.push({
+        id: ann.id,
+        yPosition: ann.points[0].y / size.height,
+        expectedIntensity: ann.confidence || 1,
+        tolerance: 0.04,
+        label: ann.label || `Observed ${index + 1}`
+      });
+    });
+    return { id: "observed", name: "Observed annotations", lanes };
+  }
+
+  function scoreSignature(observed, expected) {
+    let matchedBands = 0;
+    let missingBands = 0;
+    const matchedObserved = new Set();
+    const details = [];
+
+    expected.lanes.forEach((expectedLane) => {
+      const observedLane = nearestLane(expectedLane, observed.lanes);
+      expectedLane.bands.forEach((expectedBand) => {
+        const tol = expectedBand.tolerance || 0.04;
+        let best = null;
+        let bestDist = Infinity;
+        observedLane.bands.forEach((observedBand) => {
+          const key = `${observedLane.id}:${observedBand.id}`;
+          if (matchedObserved.has(key)) return;
+          const dist = Math.abs(observedBand.yPosition - expectedBand.yPosition);
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = { band: observedBand, key };
+          }
+        });
+        if (best && bestDist <= tol) {
+          matchedBands += 1;
+          matchedObserved.add(best.key);
+          details.push({
+            expected: expectedBand.label || expectedBand.id,
+            lane: expectedLane.label,
+            status: "matched",
+            delta: Number(bestDist.toFixed(4))
+          });
+        } else {
+          missingBands += 1;
+          details.push({
+            expected: expectedBand.label || expectedBand.id,
+            lane: expectedLane.label,
+            status: "missing",
+            delta: null
+          });
+        }
+      });
+    });
+
+    const observedBandCount = observed.lanes.reduce((sum, lane) => sum + lane.bands.length, 0);
+    const extraBands = Math.max(0, observedBandCount - matchedObserved.size);
+    const denom = matchedBands + missingBands + extraBands * 0.35;
+    const presence = denom === 0 ? 0 : matchedBands / denom;
+    const cosine = cosineSimilarity(signatureVector(observed), signatureVector(expected));
+    const score = Math.round((presence * 0.7 + cosine * 0.3) * 1000) / 1000;
+    const confidence = Math.round(Math.max(0, Math.min(1, score - extraBands * 0.015)) * 1000) / 1000;
+
+    return {
+      signatureId: expected.id,
+      signatureName: expected.name,
+      score,
+      confidence,
+      matchedBands,
+      missingBands,
+      extraBands,
+      details
+    };
+  }
+
+  function nearestLane(lane, lanes) {
+    if (!lanes.length) return { bands: [] };
+    return lanes.reduce((best, item) =>
+      Math.abs(item.xPosition - lane.xPosition) < Math.abs(best.xPosition - lane.xPosition) ? item : best
+    , lanes[0]);
+  }
+
+  function signatureVector(signature, bins = 96) {
+    const values = new Array(bins).fill(0);
+    signature.lanes.forEach((lane, laneIndex) => {
+      lane.bands.forEach((band) => {
+        const index = clamp(Math.round(band.yPosition * (bins - 1)), 0, bins - 1);
+        const laneWeight = 1 + laneIndex * 0.05;
+        values[index] += (band.expectedIntensity || 1) * laneWeight;
+      });
+    });
+    return values;
+  }
+
+  function cosineSimilarity(a, b) {
+    const length = Math.max(a.length, b.length);
+    let dot = 0;
+    let magA = 0;
+    let magB = 0;
+    for (let i = 0; i < length; i += 1) {
+      const av = a[i] || 0;
+      const bv = b[i] || 0;
+      dot += av * bv;
+      magA += av * av;
+      magB += bv * bv;
+    }
+    if (!magA || !magB) return 0;
+    return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+  }
+
+  function updateResults() {
+    els.resultsList.innerHTML = "";
+    if (!state.results.length) {
+      els.resultsList.innerHTML = `<div class="meta-list">No comparisons run yet.</div>`;
+      return;
+    }
+    state.results.forEach((result) => {
+      const node = document.createElement("div");
+      node.className = "result-item";
+      node.innerHTML = `
+        <strong>${escapeHtml(result.signatureName)} · ${(result.score * 100).toFixed(1)}%</strong>
+        <span>${result.matchedBands} matched · ${result.missingBands} missing · ${result.extraBands} extra · confidence ${(result.confidence * 100).toFixed(1)}%</span>
+      `;
+      els.resultsList.appendChild(node);
+    });
+  }
+
+  function renderCompositionCanvas(options = {}) {
+    const img = activeImageCanvas();
+    if (!img) return null;
+    const output = document.createElement("canvas");
+    output.width = img.width;
+    output.height = img.height;
+    const outCtx = output.getContext("2d");
+    if (options.background !== false) outCtx.drawImage(img, 0, 0);
+    if (options.overlays !== false) drawOverlaysForExport(outCtx);
+    if (options.annotations !== false) drawAnnotationsForExport(outCtx);
+    return output;
+  }
+
+  function drawOverlaysForExport(outCtx) {
+    state.overlays
+      .slice()
+      .sort((a, b) => a.zIndex - b.zIndex)
+      .filter((overlay) => overlay.visible)
+      .forEach((overlay) => drawOverlay(outCtx, overlay));
+  }
+
+  function drawAnnotationsForExport(outCtx) {
+    state.annotations
+      .filter((ann) => ann.visible)
+      .forEach((ann) => {
+        const prevZoom = state.view.zoom;
+        state.view.zoom = 1;
+        drawAnnotation(outCtx, ann, false);
+        state.view.zoom = prevZoom;
+      });
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  function downloadJson(data, filename) {
+    downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }), filename);
+  }
+
+  function exportPng() {
+    const composition = renderCompositionCanvas();
+    if (!composition) return;
+    composition.toBlob((blob) => {
+      if (blob) downloadBlob(blob, `sage-composition-${timestamp()}.png`);
+    }, "image/png");
+  }
+
+  function exportProject() {
+    const includeRaw = state.image && window.confirm("Include the raw uploaded image in the project JSON? This makes the file larger but allows reopening the project with the image.");
+    const project = captureProject(includeRaw);
+    downloadJson(project, `sage-project-${timestamp()}.json`);
+  }
+
+  function captureProject(includeRawImage = false) {
+    return {
+      app: "SAGE",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      image: state.image ? {
+        fileName: state.image.fileName,
+        fileSize: state.image.fileSize,
+        type: state.image.type,
+        width: state.image.width,
+        height: state.image.height,
+        rawImageIncluded: Boolean(includeRawImage),
+        dataUrl: includeRawImage ? state.image.dataUrl : undefined
+      } : null,
+      adjustments: clone(state.adjustments),
+      annotations: clone(state.annotations),
+      overlays: state.overlays.map(serializeOverlay),
+      signatures: clone(state.signatures),
+      results: clone(state.results)
+    };
+  }
+
+  function serializeOverlay(overlay) {
+    const copy = clone(overlay);
+    delete copy.imageElement;
+    return copy;
+  }
+
+  async function importProject(file) {
+    const text = await file.text();
+    const project = JSON.parse(text);
+    if (!project || project.app !== "SAGE") throw new Error("Not a SAGE project JSON file.");
+    if (project.image && project.image.dataUrl) {
+      const img = await loadImageElement(project.image.dataUrl);
+      const originalCanvas = document.createElement("canvas");
+      originalCanvas.width = img.naturalWidth;
+      originalCanvas.height = img.naturalHeight;
+      originalCanvas.getContext("2d").drawImage(img, 0, 0);
+      state.image = {
+        fileName: project.image.fileName || "Imported image",
+        fileSize: project.image.fileSize || 0,
+        type: project.image.type || "image",
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+        dataUrl: project.image.dataUrl,
+        element: img,
+        originalCanvas,
+        processedCanvas: document.createElement("canvas")
+      };
+    } else if (project.image) {
+      alert("Project imported without raw image data. Upload the matching image to continue visual analysis.");
+    }
+    state.adjustments = { ...defaultAdjustments(), ...(project.adjustments || {}) };
+    state.annotations = project.annotations || [];
+    state.signatures = project.signatures || createDefaultSignatures();
+    state.results = project.results || [];
+    state.overlays = await hydrateOverlays(project.overlays || []);
+    if (state.image) renderProcessedImage();
+    syncAdjustmentInputs();
+    fitToScreen();
+    pushHistory("import project");
+    updateAll();
+  }
+
+  async function hydrateOverlays(overlays) {
+    const hydrated = [];
+    for (const overlay of overlays) {
+      const copy = clone(overlay);
+      if (copy.type === "image" && copy.dataUrl) {
+        try {
+          copy.imageElement = await loadImageElement(copy.dataUrl);
+        } catch (_) {
+          copy.visible = false;
+        }
+      }
+      hydrated.push(copy);
+    }
+    return hydrated;
+  }
+
+  function exportCsv() {
+    const headers = ["signatureId", "signatureName", "score", "confidence", "matchedBands", "missingBands", "extraBands"];
+    const rows = state.results.map((result) => headers.map((key) => csvCell(result[key])).join(","));
+    const csv = [headers.join(","), ...rows].join("\n");
+    downloadBlob(new Blob([csv], { type: "text/csv" }), `sage-results-${timestamp()}.csv`);
+  }
+
+  function csvCell(value) {
+    const text = String(value ?? "");
+    if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+    return text;
+  }
+
+  function timestamp() {
+    return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  }
+
+  function pushHistory(label) {
+    const snapshot = {
+      label,
+      adjustments: clone(state.adjustments),
+      annotations: clone(state.annotations),
+      overlays: state.overlays.map(serializeOverlay),
+      signatures: clone(state.signatures),
+      results: clone(state.results),
+      selected: clone(state.selected)
+    };
+    state.history = state.history.slice(0, state.historyIndex + 1);
+    state.history.push(snapshot);
+    if (state.history.length > 80) state.history.shift();
+    state.historyIndex = state.history.length - 1;
+    updateUndoRedo();
+  }
+
+  async function restoreHistory(index) {
+    const snapshot = state.history[index];
+    if (!snapshot) return;
+    state.adjustments = clone(snapshot.adjustments);
+    state.annotations = clone(snapshot.annotations);
+    state.overlays = await hydrateOverlays(snapshot.overlays);
+    state.signatures = clone(snapshot.signatures);
+    state.results = clone(snapshot.results);
+    state.selected = clone(snapshot.selected);
+    if (state.image) renderProcessedImage();
+    syncAdjustmentInputs();
+    updateAll();
+    updateUndoRedo();
+  }
+
+  function undo() {
+    if (state.historyIndex <= 0) return;
+    state.historyIndex -= 1;
+    restoreHistory(state.historyIndex);
+  }
+
+  function redo() {
+    if (state.historyIndex >= state.history.length - 1) return;
+    state.historyIndex += 1;
+    restoreHistory(state.historyIndex);
+  }
+
+  function updateUndoRedo() {
+    $("undoBtn").disabled = state.historyIndex <= 0;
+    $("redoBtn").disabled = state.historyIndex >= state.history.length - 1;
+  }
+
+  function syncAdjustmentInputs() {
+    const a = state.adjustments;
+    $("brightness").value = a.brightness;
+    $("contrast").value = a.contrast;
+    $("gamma").value = Math.round(a.gamma * 100);
+    $("saturation").value = Math.round(a.saturation * 100);
+    $("sharpen").value = Math.round(a.sharpen);
+    $("denoise").value = Math.round(a.denoise);
+    $("backgroundSubtract").value = Math.round(a.backgroundSubtract);
+    $("grayscale").checked = a.grayscale;
+    $("invert").checked = a.invert;
+    $("flipX").checked = a.flipX;
+    $("flipY").checked = a.flipY;
+    $("rotation").value = a.rotation;
+    const crop = a.crop || {};
+    $("cropX").value = crop.x ?? "";
+    $("cropY").value = crop.y ?? "";
+    $("cropW").value = crop.width ?? "";
+    $("cropH").value = crop.height ?? "";
+  }
+
+  function readAdjustmentsFromInputs() {
+    state.adjustments.brightness = Number($("brightness").value);
+    state.adjustments.contrast = Number($("contrast").value);
+    state.adjustments.gamma = Number($("gamma").value) / 100;
+    state.adjustments.saturation = Number($("saturation").value) / 100;
+    state.adjustments.sharpen = Number($("sharpen").value);
+    state.adjustments.denoise = Number($("denoise").value);
+    state.adjustments.backgroundSubtract = Number($("backgroundSubtract").value);
+    state.adjustments.grayscale = $("grayscale").checked;
+    state.adjustments.invert = $("invert").checked;
+    state.adjustments.flipX = $("flipX").checked;
+    state.adjustments.flipY = $("flipY").checked;
+    state.adjustments.rotation = Number($("rotation").value);
+  }
+
+  function applyCropFromInputs() {
+    if (!state.image) return;
+    const x = Number($("cropX").value || 0);
+    const y = Number($("cropY").value || 0);
+    const width = Number($("cropW").value || state.image.width);
+    const height = Number($("cropH").value || state.image.height);
+    state.adjustments.crop = normalizeCrop({ x, y, width, height }, state.image.width, state.image.height);
+    renderProcessedImage();
+    fitToScreen();
+    pushHistory("crop");
+    updateAll();
+  }
+
+  function syncSelectedControls() {
+    const obj = selectedObject();
+    const isOverlay = state.selected && state.selected.kind === "overlay" && obj;
+    ["selectedOpacity", "selectedX", "selectedY", "selectedScaleX", "selectedScaleY", "selectedRotation", "selectedSkewX", "selectedVisible", "selectedLocked"].forEach((idName) => {
+      $(idName).disabled = !isOverlay;
+    });
+    if (!isOverlay) return;
+    $("selectedOpacity").value = Math.round(obj.opacity * 100);
+    $("selectedX").value = Math.round(obj.x);
+    $("selectedY").value = Math.round(obj.y);
+    $("selectedScaleX").value = Number(obj.scaleX).toFixed(2);
+    $("selectedScaleY").value = Number(obj.scaleY).toFixed(2);
+    $("selectedRotation").value = Math.round(obj.rotation);
+    $("selectedSkewX").value = Math.round(obj.skewX || 0);
+    $("selectedVisible").checked = obj.visible;
+    $("selectedLocked").checked = obj.locked;
+  }
+
+  function applySelectedControls() {
+    const obj = selectedObject();
+    if (!obj || !state.selected || state.selected.kind !== "overlay") return;
+    obj.opacity = Number($("selectedOpacity").value) / 100;
+    obj.x = Number($("selectedX").value) || 0;
+    obj.y = Number($("selectedY").value) || 0;
+    obj.scaleX = Number($("selectedScaleX").value) || 1;
+    obj.scaleY = Number($("selectedScaleY").value) || 1;
+    obj.rotation = Number($("selectedRotation").value) || 0;
+    obj.skewX = Number($("selectedSkewX").value) || 0;
+    obj.visible = $("selectedVisible").checked;
+    obj.locked = $("selectedLocked").checked;
+    draw();
+    updateLayerList();
+  }
+
+  function deleteSelected() {
+    if (!state.selected) return;
+    if (state.selected.kind === "annotation") {
+      state.annotations = state.annotations.filter((item) => item.id !== state.selected.id);
+    } else if (state.selected.kind === "overlay") {
+      state.overlays = state.overlays.filter((item) => item.id !== state.selected.id);
+    }
+    state.selected = null;
+    pushHistory("delete selected");
+    updateAll();
+  }
+
+  function reorderSelected(direction) {
+    const obj = selectedObject();
+    if (!obj || !state.selected || state.selected.kind !== "overlay") return;
+    obj.zIndex += direction;
+    const sorted = [...state.overlays].sort((a, b) => a.zIndex - b.zIndex);
+    sorted.forEach((overlay, index) => {
+      overlay.zIndex = index + 1;
+    });
+    pushHistory("reorder overlay");
+    updateAll();
+  }
+
+  function updateImageMeta() {
+    if (!state.image) {
+      els.imageMeta.textContent = "No image loaded";
+      return;
+    }
+    const processed = activeImageCanvas();
+    els.imageMeta.innerHTML = `
+      <strong>${escapeHtml(state.image.fileName)}</strong><br>
+      Original ${state.image.width} × ${state.image.height} · ${fileSize(state.image.fileSize)}<br>
+      Working ${processed.width} × ${processed.height}
+    `;
+  }
+
+  function updateAll() {
+    updateImageMeta();
+    updateLayerList();
+    updateSignatureList();
+    updateResults();
+    syncSelectedControls();
+    updateUndoRedo();
+    draw();
+  }
+
+  function escapeHtml(text) {
+    return String(text ?? "").replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;"
+    }[char]));
+  }
+
+  function bindEvents() {
+    els.imageInput.addEventListener("change", async (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      try {
+        await loadImageFromFile(file);
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        event.target.value = "";
+      }
+    });
+
+    els.overlayImageInput.addEventListener("change", async (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      if (!state.image) {
+        alert("Load a base image before adding overlays.");
+        event.target.value = "";
+        return;
+      }
+      try {
+        await addOverlayImage(file);
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        event.target.value = "";
+      }
+    });
+
+    els.projectImportInput.addEventListener("change", async (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      try {
+        await importProject(file);
+      } catch (error) {
+        alert(`Project import failed: ${error.message}`);
+      } finally {
+        event.target.value = "";
+      }
+    });
+
+    els.signatureImportInput.addEventListener("change", async (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      try {
+        const imported = JSON.parse(await file.text());
+        const signatures = Array.isArray(imported) ? imported : imported.signatures;
+        if (!Array.isArray(signatures)) throw new Error("Expected an array or { signatures }.");
+        signatures.forEach(validateSignature);
+        state.signatures = signatures;
+        pushHistory("import signatures");
+        updateSignatureList();
+      } catch (error) {
+        alert(`Signature import failed: ${error.message}`);
+      } finally {
+        event.target.value = "";
+      }
+    });
+
+    adjustmentIds.forEach((inputId) => {
+      const input = $(inputId);
+      const eventName = input.type === "checkbox" || input.tagName === "SELECT" ? "change" : "input";
+      input.addEventListener(eventName, () => {
+        if (!state.image) return;
+        readAdjustmentsFromInputs();
+        renderProcessedImage();
+        draw();
+        updateImageMeta();
+      });
+      input.addEventListener("change", () => {
+        if (!state.image) return;
+        readAdjustmentsFromInputs();
+        renderProcessedImage();
+        fitToScreen();
+        pushHistory("adjust image");
+        updateAll();
+      });
+    });
+
+    document.querySelectorAll("#toolButtons button").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.tool = button.dataset.tool;
+        document.querySelectorAll("#toolButtons button").forEach((item) => item.classList.toggle("active", item === button));
+      });
+    });
+
+    ["showProcessed", "showOriginalInset", "showAnnotations", "showOverlays"].forEach((idName) => {
+      $(idName).addEventListener("change", () => {
+        const key = idName.replace(/^show/, "");
+        const normalized = key.charAt(0).toLowerCase() + key.slice(1);
+        state.layerVisibility[normalized] = $(idName).checked;
+        draw();
+      });
+    });
+
+    ["selectedOpacity", "selectedX", "selectedY", "selectedScaleX", "selectedScaleY", "selectedRotation", "selectedSkewX", "selectedVisible", "selectedLocked"].forEach((idName) => {
+      const input = $(idName);
+      input.addEventListener("input", applySelectedControls);
+      input.addEventListener("change", () => {
+        applySelectedControls();
+        pushHistory("edit overlay transform");
+      });
+    });
+
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointercancel", onPointerUp);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+
+    $("newProjectBtn").addEventListener("click", () => {
+      if (!window.confirm("Start a new project? Unsaved in-memory data will be cleared.")) return;
+      state.image = null;
+      state.adjustments = defaultAdjustments();
+      state.annotations = [];
+      state.overlays = [];
+      state.results = [];
+      state.selected = null;
+      syncAdjustmentInputs();
+      pushHistory("new project");
+      updateAll();
+    });
+    $("undoBtn").addEventListener("click", undo);
+    $("redoBtn").addEventListener("click", redo);
+    $("fitBtn").addEventListener("click", () => { fitToScreen(); draw(); });
+    $("actualBtn").addEventListener("click", actualSize);
+    $("resetViewBtn").addEventListener("click", () => { fitToScreen(); draw(); });
+    $("resetImageBtn").addEventListener("click", resetToOriginal);
+    $("resetAdjustmentsBtn").addEventListener("click", resetToOriginal);
+    $("applyCropBtn").addEventListener("click", applyCropFromInputs);
+    $("clearCropBtn").addEventListener("click", () => {
+      state.adjustments.crop = null;
+      syncAdjustmentInputs();
+      renderProcessedImage();
+      fitToScreen();
+      pushHistory("clear crop");
+      updateAll();
+    });
+    $("deleteSelectedBtn").addEventListener("click", deleteSelected);
+    $("signatureFromAnnotationsBtn").addEventListener("click", makeSignatureFromAnnotations);
+    $("overlayFromSignatureBtn").addEventListener("click", () => addOverlayFromSignature(selectedSignature()));
+    $("bringForwardBtn").addEventListener("click", () => reorderSelected(1.5));
+    $("sendBackwardBtn").addEventListener("click", () => reorderSelected(-1.5));
+    $("exportProjectBtn").addEventListener("click", exportProject);
+    $("exportPngBtn").addEventListener("click", exportPng);
+    $("exportAnnotationsBtn").addEventListener("click", () => downloadJson(state.annotations, `sage-annotations-${timestamp()}.json`));
+    $("exportSignaturesBtn").addEventListener("click", () => downloadJson({ signatures: state.signatures }, `sage-signatures-${timestamp()}.json`));
+    $("exportCsvBtn").addEventListener("click", exportCsv);
+    $("compareBtn").addEventListener("click", compareSignatures);
+    $("saveSignatureBtn").addEventListener("click", saveSignatureFromEditor);
+    $("newSignatureBtn").addEventListener("click", () => {
+      const signature = {
+        id: id("sig"),
+        name: "New signature",
+        category: "",
+        species: "",
+        product: "",
+        gene: "",
+        diagnosticTarget: "",
+        notes: "",
+        lanes: [{ id: id("lane"), label: "Lane 1", xPosition: 0.5, bands: [] }],
+        metadata: { coordinateSystem: "normalized" }
+      };
+      state.signatures.push(signature);
+      pushHistory("new signature");
+      updateSignatureList();
+      els.signatureSelect.value = signature.id;
+      updateSignatureEditor();
+    });
+    $("duplicateSignatureBtn").addEventListener("click", () => {
+      const sig = selectedSignature();
+      if (!sig) return;
+      const copy = clone(sig);
+      copy.id = id("sig");
+      copy.name = `${copy.name} copy`;
+      state.signatures.push(copy);
+      pushHistory("duplicate signature");
+      updateSignatureList();
+      els.signatureSelect.value = copy.id;
+      updateSignatureEditor();
+    });
+    $("deleteSignatureBtn").addEventListener("click", () => {
+      const sig = selectedSignature();
+      if (!sig) return;
+      state.signatures = state.signatures.filter((item) => item.id !== sig.id);
+      pushHistory("delete signature");
+      updateSignatureList();
+    });
+    els.signatureSearch.addEventListener("input", updateSignatureList);
+    els.signatureSelect.addEventListener("change", updateSignatureEditor);
+
+    window.addEventListener("resize", resizeWorkspace);
+    window.addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redo();
+        else undo();
+      } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        redo();
+      } else if (event.key === "Delete" || event.key === "Backspace") {
+        if (document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+        deleteSelected();
+      }
+    });
+  }
+
+  function init() {
+    bindEvents();
+    syncAdjustmentInputs();
+    updateSignatureList();
+    updateLayerList();
+    updateResults();
+    resizeWorkspace();
+    pushHistory("initial");
+    syncSelectedControls();
+    if ("serviceWorker" in navigator && location.protocol !== "file:") {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    }
+  }
+
+  init();
+
+  window.SAGE = {
+    state,
+    loadImageFromFile,
+    createWorkingImage,
+    resetToOriginal,
+    compareSignatures,
+    exportProject
+  };
+})();

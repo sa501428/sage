@@ -1,0 +1,10 @@
+{
+  "name": "SAGE",
+  "short_name": "SAGE",
+  "description": "Local-first gel, blot, and lane/band signature analysis.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f4f6f8",
+  "theme_color": "#f7f8fb",
+  "icons": []
+}

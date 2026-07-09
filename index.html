@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data: blob:; media-src 'none'; connect-src 'none'; font-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'none'"
+    >
+    <meta name="theme-color" content="#f7f8fb">
+    <title>SAGE - Signature Analysis for Gel-based Experiments</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="stylesheet" href="styles.css">
+    <script src="src/app.js" defer></script>
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <strong>SAGE</strong>
+          <span>Signature Analysis for Gel-based Experiments</span>
+        </div>
+        <nav class="toolbar" aria-label="Project actions">
+          <button id="newProjectBtn" type="button" title="New project">+</button>
+          <button id="undoBtn" type="button" title="Undo">↶</button>
+          <button id="redoBtn" type="button" title="Redo">↷</button>
+          <button id="fitBtn" type="button" title="Fit to screen">⛶</button>
+          <button id="actualBtn" type="button" title="Actual size">1:1</button>
+          <button id="exportProjectBtn" type="button" title="Export project JSON">⇩</button>
+          <label class="icon-upload" title="Import project JSON">
+            ⇧
+            <input id="projectImportInput" type="file" accept="application/json,.json">
+          </label>
+        </nav>
+        <div class="privacy-chip" title="No network calls or server upload">Local only</div>
+      </header>
+
+      <main class="workspace-grid">
+        <aside class="sidebar left-panel" aria-label="Controls">
+          <section class="panel">
+            <h2>Image</h2>
+            <label class="file-picker">
+              <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/tiff,.tif,.tiff">
+              <span>Upload gel image</span>
+            </label>
+            <div id="imageMeta" class="meta-list">No image loaded</div>
+            <div class="row">
+              <button id="resetImageBtn" type="button">Reset image</button>
+              <button id="resetViewBtn" type="button">Reset view</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Enhance</h2>
+              <button id="resetAdjustmentsBtn" type="button" title="Reset enhancements">Reset</button>
+            </div>
+            <label>Brightness <input id="brightness" type="range" min="-100" max="100" value="0"></label>
+            <label>Contrast <input id="contrast" type="range" min="-100" max="100" value="0"></label>
+            <label>Gamma <input id="gamma" type="range" min="20" max="300" value="100"></label>
+            <label>Saturation <input id="saturation" type="range" min="0" max="250" value="100"></label>
+            <label>Sharpen <input id="sharpen" type="range" min="0" max="100" value="0"></label>
+            <label>Denoise <input id="denoise" type="range" min="0" max="100" value="0"></label>
+            <label>Background <input id="backgroundSubtract" type="range" min="0" max="100" value="0"></label>
+            <div class="switch-row">
+              <label><input id="grayscale" type="checkbox"> Grayscale</label>
+              <label><input id="invert" type="checkbox"> Invert</label>
+            </div>
+            <div class="switch-row">
+              <label><input id="flipX" type="checkbox"> Flip X</label>
+              <label><input id="flipY" type="checkbox"> Flip Y</label>
+            </div>
+            <label>Rotation
+              <select id="rotation">
+                <option value="0">0°</option>
+                <option value="90">90°</option>
+                <option value="180">180°</option>
+                <option value="270">270°</option>
+              </select>
+            </label>
+            <details>
+              <summary>Crop</summary>
+              <div class="grid-2">
+                <label>X <input id="cropX" type="number" min="0" step="1"></label>
+                <label>Y <input id="cropY" type="number" min="0" step="1"></label>
+                <label>W <input id="cropW" type="number" min="1" step="1"></label>
+                <label>H <input id="cropH" type="number" min="1" step="1"></label>
+              </div>
+              <div class="row">
+                <button id="applyCropBtn" type="button">Apply</button>
+                <button id="clearCropBtn" type="button">Clear</button>
+              </div>
+            </details>
+          </section>
+
+          <section class="panel">
+            <h2>Annotate</h2>
+            <div id="toolButtons" class="tool-grid">
+              <button data-tool="select" class="active" type="button" title="Select or move">↖</button>
+              <button data-tool="pan" type="button" title="Pan">✥</button>
+              <button data-tool="lane" type="button" title="Lane">║</button>
+              <button data-tool="band" type="button" title="Band">═</button>
+              <button data-tool="rect" type="button" title="Region">▭</button>
+              <button data-tool="line" type="button" title="Line">╱</button>
+              <button data-tool="label" type="button" title="Label">T</button>
+            </div>
+            <label>Annotation label <input id="annotationLabel" type="text" placeholder="Lane 1, Band A"></label>
+            <label>Color <input id="annotationColor" type="color" value="#16a34a"></label>
+            <div class="row">
+              <button id="deleteSelectedBtn" type="button">Delete</button>
+              <button id="signatureFromAnnotationsBtn" type="button">Signature view</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Reference Overlay</h2>
+            <label class="file-picker secondary">
+              <input id="overlayImageInput" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml">
+              <span>Import overlay image</span>
+            </label>
+            <div class="row">
+              <button id="overlayFromSignatureBtn" type="button">Add selected signature</button>
+            </div>
+            <label>Opacity <input id="selectedOpacity" type="range" min="0" max="100" value="80"></label>
+            <div class="grid-2">
+              <label>X <input id="selectedX" type="number" step="1"></label>
+              <label>Y <input id="selectedY" type="number" step="1"></label>
+              <label>Scale X <input id="selectedScaleX" type="number" step="0.05"></label>
+              <label>Scale Y <input id="selectedScaleY" type="number" step="0.05"></label>
+              <label>Rotate <input id="selectedRotation" type="number" step="1"></label>
+              <label>Skew X <input id="selectedSkewX" type="number" step="1"></label>
+            </div>
+            <div class="switch-row">
+              <label><input id="selectedVisible" type="checkbox" checked> Visible</label>
+              <label><input id="selectedLocked" type="checkbox"> Locked</label>
+            </div>
+            <div class="row">
+              <button id="bringForwardBtn" type="button">Forward</button>
+              <button id="sendBackwardBtn" type="button">Backward</button>
+            </div>
+          </section>
+        </aside>
+
+        <section class="center-stage" aria-label="Canvas workspace">
+          <div class="notice">
+            SAGE runs locally in your browser. Images and analysis data are not uploaded, backed up, or transmitted. Save or export files manually if you want to keep them.
+          </div>
+          <div class="canvas-frame">
+            <canvas id="workspaceCanvas" width="1200" height="800" aria-label="Image analysis canvas"></canvas>
+          </div>
+          <div class="statusbar">
+            <span id="cursorReadout">x -, y -</span>
+            <span id="zoomReadout">100%</span>
+            <div class="layer-toggles">
+              <label><input id="showProcessed" type="checkbox" checked> Processed</label>
+              <label><input id="showOriginalInset" type="checkbox" checked> Original inset</label>
+              <label><input id="showAnnotations" type="checkbox" checked> Annotations</label>
+              <label><input id="showOverlays" type="checkbox" checked> Overlays</label>
+            </div>
+          </div>
+        </section>
+
+        <aside class="sidebar right-panel" aria-label="Results and library">
+          <section class="panel">
+            <h2>Layers</h2>
+            <div id="layerList" class="layer-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Signature Library</h2>
+              <button id="newSignatureBtn" type="button" title="Create signature">+</button>
+            </div>
+            <input id="signatureSearch" type="search" placeholder="Search signatures">
+            <select id="signatureSelect" size="5" aria-label="Signatures"></select>
+            <div class="row">
+              <label class="inline-file">
+                Import
+                <input id="signatureImportInput" type="file" accept="application/json,.json">
+              </label>
+              <button id="exportSignaturesBtn" type="button">Export</button>
+              <button id="duplicateSignatureBtn" type="button">Duplicate</button>
+              <button id="deleteSignatureBtn" type="button">Delete</button>
+            </div>
+            <textarea id="signatureEditor" spellcheck="false" aria-label="Selected signature JSON"></textarea>
+            <div class="row">
+              <button id="saveSignatureBtn" type="button">Save JSON</button>
+              <button id="compareBtn" type="button">Compare</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Results</h2>
+            <div id="resultsList" class="results-list"></div>
+            <div class="row">
+              <button id="exportPngBtn" type="button">PNG</button>
+              <button id="exportAnnotationsBtn" type="button">Annotations</button>
+              <button id="exportCsvBtn" type="button">CSV</button>
+            </div>
+          </section>
+        </aside>
+      </main>
+    </div>
+  </body>
+</html>
