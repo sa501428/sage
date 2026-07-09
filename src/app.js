@@ -26,6 +26,7 @@
   const state = {
     image: null,
     adjustments: defaultAdjustments(),
+    overlayCrop: { left: 0, top: 0, right: 0, bottom: 0 },
     view: { zoom: 1, panX: 40, panY: 40 },
     tool: "select",
     annotations: [],
@@ -63,7 +64,11 @@
     annotationColor: $("annotationColor"),
     cropMeta: $("cropMeta"),
     overlayList: $("overlayList"),
-    themeToggleBtn: $("themeToggleBtn")
+    themeToggleBtn: $("themeToggleBtn"),
+    overlayCropLeft: $("overlayCropLeft"),
+    overlayCropTop: $("overlayCropTop"),
+    overlayCropRight: $("overlayCropRight"),
+    overlayCropBottom: $("overlayCropBottom")
   };
 
   const adjustmentIds = [
@@ -551,12 +556,58 @@
     targetCtx.scale(overlay.scaleX, overlay.scaleY);
 
     if (overlay.type === "image" && overlay.imageElement) {
-      targetCtx.drawImage(overlay.imageElement, 0, 0, overlay.width, overlay.height);
+      const crop = overlaySourceCrop(overlay);
+      targetCtx.drawImage(
+        overlay.imageElement,
+        crop.x,
+        crop.y,
+        crop.width,
+        crop.height,
+        0,
+        0,
+        overlay.width,
+        overlay.height
+      );
     } else if (overlay.type === "signature") {
       drawSignatureShape(targetCtx, overlay.signature, overlay.width, overlay.height);
     }
 
     targetCtx.restore();
+  }
+
+  function normalizedOverlayCrop() {
+    const crop = state.overlayCrop || {};
+    let left = clamp(Number(crop.left) || 0, 0, 95);
+    let top = clamp(Number(crop.top) || 0, 0, 95);
+    let right = clamp(Number(crop.right) || 0, 0, 95);
+    let bottom = clamp(Number(crop.bottom) || 0, 0, 95);
+    if (left + right > 98) {
+      const scale = 98 / (left + right);
+      left *= scale;
+      right *= scale;
+    }
+    if (top + bottom > 98) {
+      const scale = 98 / (top + bottom);
+      top *= scale;
+      bottom *= scale;
+    }
+    return { left, top, right, bottom };
+  }
+
+  function overlaySourceCrop(overlay) {
+    const crop = normalizedOverlayCrop();
+    const width = Math.max(1, overlay.width || 1);
+    const height = Math.max(1, overlay.height || 1);
+    const x = Math.round(width * crop.left / 100);
+    const y = Math.round(height * crop.top / 100);
+    const right = Math.round(width * crop.right / 100);
+    const bottom = Math.round(height * crop.bottom / 100);
+    return {
+      x,
+      y,
+      width: Math.max(1, width - x - right),
+      height: Math.max(1, height - y - bottom)
+    };
   }
 
   function drawOverlayLabel(targetCtx, overlay) {
@@ -1672,6 +1723,7 @@
         dataUrl: includeRawImage ? state.image.dataUrl : undefined
       } : null,
       adjustments: clone(state.adjustments),
+      overlayCrop: clone(state.overlayCrop),
       annotations: clone(state.annotations),
       overlays: state.overlays.map(serializeOverlay),
       signatures: clone(state.signatures),
@@ -1710,6 +1762,7 @@
       alert("Project imported without raw image data. Upload the matching image to continue visual analysis.");
     }
     state.adjustments = { ...defaultAdjustments(), ...(project.adjustments || {}) };
+    state.overlayCrop = { left: 0, top: 0, right: 0, bottom: 0, ...(project.overlayCrop || {}) };
     state.annotations = (project.annotations || []).map((ann) => ({ visible: true, locked: false, ...ann }));
     state.signatures = project.signatures || createDefaultSignatures();
     state.results = project.results || [];
@@ -1799,6 +1852,7 @@
     const snapshot = {
       label,
       adjustments: clone(state.adjustments),
+      overlayCrop: clone(state.overlayCrop),
       annotations: clone(state.annotations),
       overlays: state.overlays.map(serializeOverlay),
       signatures: clone(state.signatures),
@@ -1819,6 +1873,7 @@
     state.isRestoring = true;
     try {
       state.adjustments = clone(snapshot.adjustments);
+      state.overlayCrop = { left: 0, top: 0, right: 0, bottom: 0, ...(snapshot.overlayCrop || {}) };
       state.annotations = clone(snapshot.annotations);
       state.overlays = await hydrateOverlays(snapshot.overlays);
       state.signatures = clone(snapshot.signatures);
@@ -1892,6 +1947,24 @@
     } else {
       els.cropMeta.textContent = "No crop region selected.";
     }
+  }
+
+  function syncOverlayCropInputs() {
+    const crop = normalizedOverlayCrop();
+    if (els.overlayCropLeft) els.overlayCropLeft.value = Math.round(crop.left);
+    if (els.overlayCropTop) els.overlayCropTop.value = Math.round(crop.top);
+    if (els.overlayCropRight) els.overlayCropRight.value = Math.round(crop.right);
+    if (els.overlayCropBottom) els.overlayCropBottom.value = Math.round(crop.bottom);
+  }
+
+  function readOverlayCropFromInputs() {
+    state.overlayCrop = normalizedOverlayCrop();
+    state.overlayCrop.left = Number(els.overlayCropLeft && els.overlayCropLeft.value) || 0;
+    state.overlayCrop.top = Number(els.overlayCropTop && els.overlayCropTop.value) || 0;
+    state.overlayCrop.right = Number(els.overlayCropRight && els.overlayCropRight.value) || 0;
+    state.overlayCrop.bottom = Number(els.overlayCropBottom && els.overlayCropBottom.value) || 0;
+    state.overlayCrop = normalizedOverlayCrop();
+    syncOverlayCropInputs();
   }
 
   function applyCropRegion() {
@@ -2029,6 +2102,7 @@
   function updateAll() {
     updateImageMeta();
     updateCropMeta();
+    syncOverlayCropInputs();
     updateLayerList();
     updateOverlayList();
     updateSignatureList();
@@ -2180,6 +2254,20 @@
       });
     });
 
+    ["overlayCropLeft", "overlayCropTop", "overlayCropRight", "overlayCropBottom"].forEach((idName) => {
+      const input = $(idName);
+      if (!input) return;
+      input.addEventListener("input", () => {
+        readOverlayCropFromInputs();
+        draw();
+      });
+      input.addEventListener("change", () => {
+        readOverlayCropFromInputs();
+        pushHistory("soft crop overlays");
+        updateAll();
+      });
+    });
+
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
@@ -2190,6 +2278,7 @@
       if (!window.confirm("Start a new project? Unsaved in-memory data will be cleared.")) return;
       state.image = null;
       state.adjustments = defaultAdjustments();
+      state.overlayCrop = { left: 0, top: 0, right: 0, bottom: 0 };
       state.annotations = [];
       state.overlays = [];
       state.results = [];
@@ -2204,6 +2293,12 @@
     onClick("redoBtn", redo);
     onClick("resetImageBtn", resetToOriginal);
     onClick("resetAdjustmentsBtn", resetToOriginal);
+    onClick("resetOverlayCropBtn", () => {
+      state.overlayCrop = { left: 0, top: 0, right: 0, bottom: 0 };
+      syncOverlayCropInputs();
+      pushHistory("reset overlay crop");
+      updateAll();
+    });
     onClick("applyCropBtn", applyCropRegion);
     onClick("clearCropBtn", () => {
       state.adjustments.crop = null;
@@ -2291,6 +2386,7 @@
     applyTheme(localStorage.getItem("sage-theme") || "light");
     bindEvents();
     syncAdjustmentInputs();
+    syncOverlayCropInputs();
     updateSignatureList();
     updateLayerList();
     updateOverlayList();

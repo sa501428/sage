@@ -78,6 +78,18 @@
               <span>Import overlay images</span>
             </label>
             <div id="overlayList" class="overlay-list"></div>
+            <details class="overlay-crop-controls">
+              <summary>Soft crop all overlays</summary>
+              <div class="grid-2">
+                <label>Left % <input id="overlayCropLeft" type="number" min="0" max="95" step="1" value="0"></label>
+                <label>Top % <input id="overlayCropTop" type="number" min="0" max="95" step="1" value="0"></label>
+                <label>Right % <input id="overlayCropRight" type="number" min="0" max="95" step="1" value="0"></label>
+                <label>Bottom % <input id="overlayCropBottom" type="number" min="0" max="95" step="1" value="0"></label>
+              </div>
+              <div class="row">
+                <button id="resetOverlayCropBtn" type="button">Reset crop</button>
+              </div>
+            </details>
             <label>Opacity <input id="selectedOpacity" type="range" min="0" max="100" value="80"></label>
             <div class="grid-2">
               <label>X <input id="selectedX" type="number" step="1"></label>
