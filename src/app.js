@@ -34,10 +34,10 @@
     results: [],
     selected: null,
     draft: null,
+    cropRegion: null,
     dragging: null,
     layerVisibility: {
       processed: true,
-      originalInset: true,
       annotations: true,
       overlays: true
     },
@@ -60,7 +60,8 @@
     signatureSelect: $("signatureSelect"),
     signatureEditor: $("signatureEditor"),
     annotationLabel: $("annotationLabel"),
-    annotationColor: $("annotationColor")
+    annotationColor: $("annotationColor"),
+    cropMeta: $("cropMeta")
   };
 
   const adjustmentIds = [
@@ -190,6 +191,7 @@
       processedCanvas: document.createElement("canvas")
     };
     state.adjustments = defaultAdjustments();
+    state.cropRegion = null;
     syncAdjustmentInputs();
     renderProcessedImage();
     fitToScreen();
@@ -207,6 +209,7 @@
 
   function resetToOriginal() {
     state.adjustments = defaultAdjustments();
+    state.cropRegion = null;
     syncAdjustmentInputs();
     renderProcessedImage();
     fitToScreen();
@@ -440,10 +443,10 @@
     if (state.layerVisibility.overlays) drawOverlays(ctx);
     if (state.layerVisibility.annotations) drawAnnotations(ctx);
     if (state.draft) drawAnnotation(ctx, state.draft, true);
+    if (state.cropRegion) drawCropRegion(ctx, state.cropRegion);
 
     ctx.restore();
     drawSelectionOutline();
-    if (state.layerVisibility.originalInset) drawOriginalInset(width, height);
 
     els.zoomReadout.textContent = `${Math.round(state.view.zoom * 100)}%`;
   }
@@ -469,32 +472,21 @@
     ctx.restore();
   }
 
-  function drawOriginalInset(width, height) {
-    if (!state.image) return;
-    const original = state.image.originalCanvas;
-    const maxW = Math.min(220, width * 0.28);
-    const maxH = Math.min(160, height * 0.25);
-    const scale = Math.min(maxW / original.width, maxH / original.height);
-    const w = original.width * scale;
-    const h = original.height * scale;
-    const x = width - w - 18;
-    const y = 18;
-    ctx.save();
-    ctx.fillStyle = "rgba(255,255,255,0.92)";
-    ctx.fillRect(x - 8, y - 24, w + 16, h + 32);
-    ctx.strokeStyle = "#cfd8df";
-    ctx.strokeRect(x - 8, y - 24, w + 16, h + 32);
-    ctx.fillStyle = "#172026";
-    ctx.font = "12px system-ui, sans-serif";
-    ctx.fillText("Original", x, y - 8);
-    ctx.drawImage(original, x, y, w, h);
-    ctx.restore();
-  }
-
   function drawAnnotations(targetCtx) {
     state.annotations.filter((a) => a.visible).forEach((annotation) => {
       drawAnnotation(targetCtx, annotation, state.selected && state.selected.id === annotation.id);
     });
+  }
+
+  function drawCropRegion(targetCtx, region) {
+    targetCtx.save();
+    targetCtx.strokeStyle = "#256f82";
+    targetCtx.fillStyle = "rgba(37, 111, 130, 0.12)";
+    targetCtx.lineWidth = 2 / state.view.zoom;
+    targetCtx.setLineDash([8 / state.view.zoom, 5 / state.view.zoom]);
+    targetCtx.fillRect(region.x, region.y, region.width, region.height);
+    targetCtx.strokeRect(region.x, region.y, region.width, region.height);
+    targetCtx.restore();
   }
 
   function drawAnnotation(targetCtx, annotation, selected = false) {
@@ -604,7 +596,20 @@
     });
     ctx.closePath();
     ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "#256f82";
+    overlayHandlePoints(overlay).forEach((p) => {
+      ctx.beginPath();
+      ctx.rect(p.x - 5, p.y - 5, 10, 10);
+      ctx.fill();
+      ctx.stroke();
+    });
     ctx.restore();
+  }
+
+  function overlayHandlePoints(overlay) {
+    return overlayScreenCorners(overlay);
   }
 
   function overlayScreenCorners(overlay) {
@@ -633,6 +638,23 @@
       y: Math.min(a.y, b.y),
       width: Math.abs(a.x - b.x),
       height: Math.abs(a.y - b.y)
+    };
+  }
+
+  function squareFromPoints(start, end) {
+    const size = imageSize();
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const dirX = dx < 0 ? -1 : 1;
+    const dirY = dy < 0 ? -1 : 1;
+    const maxX = dirX > 0 ? size.width - start.x : start.x;
+    const maxY = dirY > 0 ? size.height - start.y : start.y;
+    const side = Math.max(1, Math.min(Math.max(Math.abs(dx), Math.abs(dy)), maxX, maxY));
+    return {
+      x: Math.round(dirX > 0 ? start.x : start.x - side),
+      y: Math.round(dirY > 0 ? start.y : start.y - side),
+      width: Math.round(side),
+      height: Math.round(side)
     };
   }
 
@@ -725,6 +747,77 @@
     });
   }
 
+  function findOverlayHandleAt(point) {
+    if (!state.selected || state.selected.kind !== "overlay") return null;
+    const overlay = state.overlays.find((item) => item.id === state.selected.id);
+    if (!overlay || overlay.locked) return null;
+    const handles = overlayHandlePoints(overlay);
+    const hitRadius = 9;
+    for (let index = handles.length - 1; index >= 0; index -= 1) {
+      const handle = handles[index];
+      if (Math.abs(point.sx - handle.x) <= hitRadius && Math.abs(point.sy - handle.y) <= hitRadius) {
+        return { overlay, handleIndex: index };
+      }
+    }
+    return null;
+  }
+
+  function overlayBaseVectors(overlay) {
+    const rad = overlay.rotation * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const skew = Math.tan((overlay.skewX || 0) * Math.PI / 180);
+    return {
+      xAxis: { x: cos, y: sin },
+      yAxis: { x: skew * cos - sin, y: skew * sin + cos }
+    };
+  }
+
+  function solveBasis(delta, xAxis, yAxis) {
+    const det = xAxis.x * yAxis.y - xAxis.y * yAxis.x;
+    if (Math.abs(det) < 0.000001) return { x: 0, y: 0 };
+    return {
+      x: (delta.x * yAxis.y - delta.y * yAxis.x) / det,
+      y: (xAxis.x * delta.y - xAxis.y * delta.x) / det
+    };
+  }
+
+  function overlayWorldPoint(overlay, localPoint) {
+    const { xAxis, yAxis } = overlayBaseVectors(overlay);
+    return {
+      x: overlay.x + xAxis.x * overlay.scaleX * localPoint.x + yAxis.x * overlay.scaleY * localPoint.y,
+      y: overlay.y + xAxis.y * overlay.scaleX * localPoint.x + yAxis.y * overlay.scaleY * localPoint.y
+    };
+  }
+
+  function overlayLocalCorner(overlay, index) {
+    return [
+      { x: 0, y: 0 },
+      { x: overlay.width, y: 0 },
+      { x: overlay.width, y: overlay.height },
+      { x: 0, y: overlay.height }
+    ][index];
+  }
+
+  function resizeOverlayFromHandle(overlay, handleIndex, point, oppositeWorld) {
+    const oppositeIndex = (handleIndex + 2) % 4;
+    const handleLocal = overlayLocalCorner(overlay, handleIndex);
+    const oppositeLocal = overlayLocalCorner(overlay, oppositeIndex);
+    const { xAxis, yAxis } = overlayBaseVectors(overlay);
+    const delta = solveBasis({
+      x: point.x - oppositeWorld.x,
+      y: point.y - oppositeWorld.y
+    }, xAxis, yAxis);
+    const spanX = handleLocal.x - oppositeLocal.x;
+    const spanY = handleLocal.y - oppositeLocal.y;
+    const minScaleX = 12 / Math.max(overlay.width, 1);
+    const minScaleY = 12 / Math.max(overlay.height, 1);
+    if (spanX) overlay.scaleX = Math.max(minScaleX, delta.x / spanX);
+    if (spanY) overlay.scaleY = Math.max(minScaleY, delta.y / spanY);
+    overlay.x = Math.round(oppositeWorld.x - xAxis.x * overlay.scaleX * oppositeLocal.x - yAxis.x * overlay.scaleY * oppositeLocal.y);
+    overlay.y = Math.round(oppositeWorld.y - xAxis.y * overlay.scaleX * oppositeLocal.x - yAxis.y * overlay.scaleY * oppositeLocal.y);
+  }
+
   function pointInPolygon(point, polygon) {
     let inside = false;
     for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
@@ -750,21 +843,33 @@
     if (!state.image) return;
 
     if (state.tool === "select") {
-      const annotation = findAnnotationAt(point);
-      if (annotation) {
-        state.selected = { kind: "annotation", id: annotation.id };
-        if (!annotation.locked) {
-          state.dragging = { type: "annotation", id: annotation.id, start: point, original: clone(annotation.points) };
-        }
+      const handle = findOverlayHandleAt(point);
+      if (handle) {
+        state.selected = { kind: "overlay", id: handle.overlay.id };
+        const oppositeIndex = (handle.handleIndex + 2) % 4;
+        state.dragging = {
+          type: "overlay-resize",
+          id: handle.overlay.id,
+          handleIndex: handle.handleIndex,
+          oppositeWorld: overlayWorldPoint(handle.overlay, overlayLocalCorner(handle.overlay, oppositeIndex))
+        };
       } else {
-        const overlay = findOverlayAt(point);
-        if (overlay) {
-          state.selected = { kind: "overlay", id: overlay.id };
-          if (!overlay.locked) {
-            state.dragging = { type: "overlay", id: overlay.id, start: point, x: overlay.x, y: overlay.y };
+        const annotation = findAnnotationAt(point);
+        if (annotation) {
+          state.selected = { kind: "annotation", id: annotation.id };
+          if (!annotation.locked) {
+            state.dragging = { type: "annotation", id: annotation.id, start: point, original: clone(annotation.points) };
           }
         } else {
-          state.selected = null;
+          const overlay = findOverlayAt(point);
+          if (overlay) {
+            state.selected = { kind: "overlay", id: overlay.id };
+            if (!overlay.locked) {
+              state.dragging = { type: "overlay", id: overlay.id, start: point, x: overlay.x, y: overlay.y };
+            }
+          } else {
+            state.selected = null;
+          }
         }
       }
       syncSelectedControls();
@@ -786,6 +891,15 @@
       return;
     }
 
+    if (state.tool === "crop") {
+      state.cropRegion = squareFromPoints(clamped, clamped);
+      state.dragging = { type: "crop", start: clamped };
+      updateCropMeta();
+      canvas.setPointerCapture(event.pointerId);
+      draw();
+      return;
+    }
+
     state.draft = makeAnnotation(state.tool, clamped, clamped);
     state.dragging = { type: "draw", start: clamped };
     canvas.setPointerCapture(event.pointerId);
@@ -804,6 +918,9 @@
     } else if (state.dragging.type === "draw" && state.draft) {
       const end = clampPoint(point);
       state.draft = makeAnnotation(state.draft.type, state.dragging.start, end);
+    } else if (state.dragging.type === "crop") {
+      state.cropRegion = squareFromPoints(state.dragging.start, clampPoint(point));
+      updateCropMeta();
     } else if (state.dragging.type === "annotation") {
       const ann = state.annotations.find((item) => item.id === state.dragging.id);
       if (ann) {
@@ -816,6 +933,12 @@
       if (overlay) {
         overlay.x = Math.round(state.dragging.x + point.x - state.dragging.start.x);
         overlay.y = Math.round(state.dragging.y + point.y - state.dragging.start.y);
+        syncSelectedControls();
+      }
+    } else if (state.dragging.type === "overlay-resize") {
+      const overlay = state.overlays.find((item) => item.id === state.dragging.id);
+      if (overlay) {
+        resizeOverlayFromHandle(overlay, state.dragging.handleIndex, point, state.dragging.oppositeWorld);
         syncSelectedControls();
       }
     }
@@ -831,7 +954,10 @@
       state.draft = null;
       pushHistory("draw annotation");
       updateAll();
-    } else if (state.dragging.type === "annotation" || state.dragging.type === "overlay") {
+    } else if (state.dragging.type === "crop") {
+      updateCropMeta();
+      draw();
+    } else if (state.dragging.type === "annotation" || state.dragging.type === "overlay" || state.dragging.type === "overlay-resize") {
       pushHistory("move object");
       updateAll();
     } else {
@@ -1399,6 +1525,7 @@
     state.signatures = project.signatures || createDefaultSignatures();
     state.results = project.results || [];
     state.overlays = await hydrateOverlays(project.overlays || []);
+    state.cropRegion = null;
     if (state.image) renderProcessedImage();
     syncAdjustmentInputs();
     fitToScreen();
@@ -1468,6 +1595,7 @@
       state.signatures = clone(snapshot.signatures);
       state.results = clone(snapshot.results);
       state.selected = clone(snapshot.selected);
+      state.cropRegion = null;
       if (state.image) renderProcessedImage();
       syncAdjustmentInputs();
       updateAll();
@@ -1508,11 +1636,7 @@
     $("flipX").checked = a.flipX;
     $("flipY").checked = a.flipY;
     $("rotation").value = a.rotation;
-    const crop = a.crop || {};
-    $("cropX").value = crop.x ?? "";
-    $("cropY").value = crop.y ?? "";
-    $("cropW").value = crop.width ?? "";
-    $("cropH").value = crop.height ?? "";
+    updateCropMeta();
   }
 
   function readAdjustmentsFromInputs() {
@@ -1530,13 +1654,27 @@
     state.adjustments.rotation = Number($("rotation").value);
   }
 
-  function applyCropFromInputs() {
+  function updateCropMeta() {
+    if (!els.cropMeta) return;
+    const region = state.cropRegion;
+    const applied = state.adjustments.crop;
+    if (region) {
+      els.cropMeta.textContent = `Region ${region.x}, ${region.y}, ${region.width} x ${region.height}`;
+    } else if (applied) {
+      els.cropMeta.textContent = `Applied ${applied.x}, ${applied.y}, ${applied.width} x ${applied.height}`;
+    } else {
+      els.cropMeta.textContent = "No crop region selected.";
+    }
+  }
+
+  function applyCropRegion() {
     if (!state.image) return;
-    const x = Number($("cropX").value || 0);
-    const y = Number($("cropY").value || 0);
-    const width = Number($("cropW").value || state.image.width);
-    const height = Number($("cropH").value || state.image.height);
-    state.adjustments.crop = normalizeCrop({ x, y, width, height }, state.image.width, state.image.height);
+    if (!state.cropRegion) {
+      alert("Draw a crop region on the image first.");
+      return;
+    }
+    state.adjustments.crop = normalizeCrop(state.cropRegion, state.image.width, state.image.height);
+    state.cropRegion = null;
     renderProcessedImage();
     fitToScreen();
     pushHistory("crop");
@@ -1618,6 +1756,7 @@
 
   function updateAll() {
     updateImageMeta();
+    updateCropMeta();
     updateLayerList();
     updateSignatureList();
     updateResults();
@@ -1725,7 +1864,7 @@
       });
     });
 
-    ["showProcessed", "showOriginalInset", "showAnnotations", "showOverlays"].forEach((idName) => {
+    ["showProcessed", "showAnnotations", "showOverlays"].forEach((idName) => {
       $(idName).addEventListener("change", () => {
         const key = idName.replace(/^show/, "");
         const normalized = key.charAt(0).toLowerCase() + key.slice(1);
@@ -1757,6 +1896,7 @@
       state.overlays = [];
       state.results = [];
       state.selected = null;
+      state.cropRegion = null;
       syncAdjustmentInputs();
       pushHistory("new project");
       updateAll();
@@ -1768,9 +1908,10 @@
     $("resetViewBtn").addEventListener("click", () => { fitToScreen(); draw(); });
     $("resetImageBtn").addEventListener("click", resetToOriginal);
     $("resetAdjustmentsBtn").addEventListener("click", resetToOriginal);
-    $("applyCropBtn").addEventListener("click", applyCropFromInputs);
+    $("applyCropBtn").addEventListener("click", applyCropRegion);
     $("clearCropBtn").addEventListener("click", () => {
       state.adjustments.crop = null;
+      state.cropRegion = null;
       syncAdjustmentInputs();
       renderProcessedImage();
       fitToScreen();

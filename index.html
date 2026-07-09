@@ -80,14 +80,9 @@
             </label>
             <details>
               <summary>Crop</summary>
-              <div class="grid-2">
-                <label>X <input id="cropX" type="number" min="0" step="1"></label>
-                <label>Y <input id="cropY" type="number" min="0" step="1"></label>
-                <label>W <input id="cropW" type="number" min="1" step="1"></label>
-                <label>H <input id="cropH" type="number" min="1" step="1"></label>
-              </div>
+              <div id="cropMeta" class="meta-list">No crop region selected.</div>
               <div class="row">
-                <button id="applyCropBtn" type="button">Apply</button>
+                <button id="applyCropBtn" type="button">Crop to region</button>
                 <button id="clearCropBtn" type="button">Clear</button>
               </div>
             </details>
@@ -101,6 +96,7 @@
               <button data-tool="lane" type="button" title="Lane">║</button>
               <button data-tool="band" type="button" title="Band">═</button>
               <button data-tool="rect" type="button" title="Region">▭</button>
+              <button data-tool="crop" type="button" title="Crop region">□</button>
               <button data-tool="line" type="button" title="Line">╱</button>
               <button data-tool="label" type="button" title="Label">T</button>
             </div>
@@ -153,7 +149,6 @@
             <span id="zoomReadout">100%</span>
             <div class="layer-toggles">
               <label><input id="showProcessed" type="checkbox" checked> Processed</label>
-              <label><input id="showOriginalInset" type="checkbox" checked> Original inset</label>
               <label><input id="showAnnotations" type="checkbox" checked> Annotations</label>
               <label><input id="showOverlays" type="checkbox" checked> Overlays</label>
             </div>
