@@ -24,8 +24,6 @@
           <button id="newProjectBtn" type="button" title="New project">+</button>
           <button id="undoBtn" type="button" title="Undo">↶</button>
           <button id="redoBtn" type="button" title="Redo">↷</button>
-          <button id="fitBtn" type="button" title="Fit to screen">⛶</button>
-          <button id="actualBtn" type="button" title="Actual size">1:1</button>
           <button id="exportProjectBtn" type="button" title="Export project JSON">⇩</button>
           <label class="icon-upload" title="Import project JSON">
             ⇧
@@ -46,7 +44,6 @@
             <div id="imageMeta" class="meta-list">No image loaded</div>
             <div class="row">
               <button id="resetImageBtn" type="button">Reset image</button>
-              <button id="resetViewBtn" type="button">Reset view</button>
             </div>
           </section>
 
@@ -66,37 +63,15 @@
               <label><input id="grayscale" type="checkbox"> Grayscale</label>
               <label><input id="invert" type="checkbox"> Invert</label>
             </div>
-            <div class="switch-row">
-              <label><input id="flipX" type="checkbox"> Flip X</label>
-              <label><input id="flipY" type="checkbox"> Flip Y</label>
-            </div>
-            <label>Rotation
-              <select id="rotation">
-                <option value="0">0°</option>
-                <option value="90">90°</option>
-                <option value="180">180°</option>
-                <option value="270">270°</option>
-              </select>
-            </label>
-            <details>
-              <summary>Crop</summary>
-              <div id="cropMeta" class="meta-list">No crop region selected.</div>
-              <div class="row">
-                <button id="applyCropBtn" type="button">Crop to region</button>
-                <button id="clearCropBtn" type="button">Clear</button>
-              </div>
-            </details>
           </section>
 
           <section class="panel">
             <h2>Annotate</h2>
             <div id="toolButtons" class="tool-grid">
               <button data-tool="select" class="active" type="button" title="Select or move">↖</button>
-              <button data-tool="pan" type="button" title="Pan">✥</button>
               <button data-tool="lane" type="button" title="Lane">║</button>
               <button data-tool="band" type="button" title="Band">═</button>
               <button data-tool="rect" type="button" title="Region">▭</button>
-              <button data-tool="crop" type="button" title="Crop region">□</button>
               <button data-tool="line" type="button" title="Line">╱</button>
               <button data-tool="label" type="button" title="Label">T</button>
             </div>
@@ -104,7 +79,6 @@
             <label>Color <input id="annotationColor" type="color" value="#16a34a"></label>
             <div class="row">
               <button id="deleteSelectedBtn" type="button">Delete</button>
-              <button id="signatureFromAnnotationsBtn" type="button">Signature view</button>
             </div>
           </section>
 
@@ -114,9 +88,6 @@
               <input id="overlayImageInput" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml">
               <span>Import overlay image</span>
             </label>
-            <div class="row">
-              <button id="overlayFromSignatureBtn" type="button">Add selected signature</button>
-            </div>
             <label>Opacity <input id="selectedOpacity" type="range" min="0" max="100" value="80"></label>
             <div class="grid-2">
               <label>X <input id="selectedX" type="number" step="1"></label>
@@ -154,46 +125,6 @@
             </div>
           </div>
         </section>
-
-        <aside class="sidebar right-panel" aria-label="Results and library">
-          <section class="panel">
-            <h2>Layers</h2>
-            <div id="layerList" class="layer-list"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head">
-              <h2>Signature Library</h2>
-              <button id="newSignatureBtn" type="button" title="Create signature">+</button>
-            </div>
-            <input id="signatureSearch" type="search" placeholder="Search signatures">
-            <select id="signatureSelect" size="5" aria-label="Signatures"></select>
-            <div class="row">
-              <label class="inline-file">
-                Import
-                <input id="signatureImportInput" type="file" accept="application/json,.json">
-              </label>
-              <button id="exportSignaturesBtn" type="button">Export</button>
-              <button id="duplicateSignatureBtn" type="button">Duplicate</button>
-              <button id="deleteSignatureBtn" type="button">Delete</button>
-            </div>
-            <textarea id="signatureEditor" spellcheck="false" aria-label="Selected signature JSON"></textarea>
-            <div class="row">
-              <button id="saveSignatureBtn" type="button">Save JSON</button>
-              <button id="compareBtn" type="button">Compare</button>
-            </div>
-          </section>
-
-          <section class="panel">
-            <h2>Results</h2>
-            <div id="resultsList" class="results-list"></div>
-            <div class="row">
-              <button id="exportPngBtn" type="button">PNG</button>
-              <button id="exportAnnotationsBtn" type="button">Annotations</button>
-              <button id="exportCsvBtn" type="button">CSV</button>
-            </div>
-          </section>
-        </aside>
       </main>
     </div>
   </body>

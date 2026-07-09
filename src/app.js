@@ -73,10 +73,7 @@
     "denoise",
     "backgroundSubtract",
     "grayscale",
-    "invert",
-    "flipX",
-    "flipY",
-    "rotation"
+    "invert"
   ];
 
   function createDefaultSignatures() {
@@ -221,6 +218,10 @@
     if (!state.image) return;
     const original = state.image.originalCanvas;
     const a = state.adjustments;
+    a.crop = null;
+    a.flipX = false;
+    a.flipY = false;
+    a.rotation = 0;
     const crop = normalizeCrop(a.crop, original.width, original.height);
     const rotate = Number(a.rotation) % 360;
     const rightAngle = rotate === 90 || rotate === 270;
@@ -375,6 +376,7 @@
     canvas.height = Math.max(1, Math.floor(rect.height * dpr));
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
+    fitToScreen();
     draw();
   }
 
@@ -834,9 +836,7 @@
 
   function onPointerDown(event) {
     const point = screenToImage(event.clientX, event.clientY);
-    if (state.tool === "pan" || event.button === 1 || event.altKey) {
-      state.dragging = { type: "pan", sx: point.sx, sy: point.sy, panX: state.view.panX, panY: state.view.panY };
-      canvas.setPointerCapture(event.pointerId);
+    if (event.button === 1 || event.altKey) {
       return;
     }
 
@@ -972,15 +972,7 @@
   }
 
   function onWheel(event) {
-    if (!state.image) return;
     event.preventDefault();
-    const point = screenToImage(event.clientX, event.clientY);
-    const factor = event.deltaY < 0 ? 1.12 : 0.89;
-    const nextZoom = clamp(state.view.zoom * factor, 0.03, 30);
-    state.view.panX = point.sx - point.x * nextZoom;
-    state.view.panY = point.sy - point.y * nextZoom;
-    state.view.zoom = nextZoom;
-    draw();
   }
 
   function clampPoint(point) {
@@ -1067,6 +1059,7 @@
   }
 
   function updateLayerList() {
+    if (!els.layerList) return;
     const items = [];
     state.overlays
       .slice()
@@ -1109,6 +1102,7 @@
   }
 
   function updateSignatureList() {
+    if (!els.signatureSearch || !els.signatureSelect) return;
     const query = els.signatureSearch.value.trim().toLowerCase();
     const selected = els.signatureSelect.value || (state.signatures[0] && state.signatures[0].id);
     els.signatureSelect.innerHTML = "";
@@ -1129,15 +1123,18 @@
   }
 
   function selectedSignature() {
+    if (!els.signatureSelect) return null;
     return state.signatures.find((sig) => sig.id === els.signatureSelect.value) || null;
   }
 
   function updateSignatureEditor() {
+    if (!els.signatureEditor) return;
     const sig = selectedSignature();
     els.signatureEditor.value = sig ? JSON.stringify(sig, null, 2) : "";
   }
 
   function saveSignatureFromEditor() {
+    if (!els.signatureEditor) return;
     let parsed;
     try {
       parsed = JSON.parse(els.signatureEditor.value);
@@ -1213,7 +1210,7 @@
     state.signatures.push(signature);
     pushHistory("generate signature");
     updateSignatureList();
-    els.signatureSelect.value = signature.id;
+    if (els.signatureSelect) els.signatureSelect.value = signature.id;
     updateSignatureEditor();
     addOverlayFromSignature(signature);
   }
@@ -1390,6 +1387,7 @@
   }
 
   function updateResults() {
+    if (!els.resultsList) return;
     els.resultsList.innerHTML = "";
     if (!state.results.length) {
       els.resultsList.innerHTML = `<div class="meta-list">No comparisons run yet.</div>`;
@@ -1633,9 +1631,6 @@
     $("backgroundSubtract").value = Math.round(a.backgroundSubtract);
     $("grayscale").checked = a.grayscale;
     $("invert").checked = a.invert;
-    $("flipX").checked = a.flipX;
-    $("flipY").checked = a.flipY;
-    $("rotation").value = a.rotation;
     updateCropMeta();
   }
 
@@ -1649,9 +1644,9 @@
     state.adjustments.backgroundSubtract = Number($("backgroundSubtract").value);
     state.adjustments.grayscale = $("grayscale").checked;
     state.adjustments.invert = $("invert").checked;
-    state.adjustments.flipX = $("flipX").checked;
-    state.adjustments.flipY = $("flipY").checked;
-    state.adjustments.rotation = Number($("rotation").value);
+    state.adjustments.flipX = false;
+    state.adjustments.flipY = false;
+    state.adjustments.rotation = 0;
   }
 
   function updateCropMeta() {
@@ -1776,6 +1771,11 @@
   }
 
   function bindEvents() {
+    const onClick = (idName, handler) => {
+      const el = $(idName);
+      if (el) el.addEventListener("click", handler);
+    };
+
     els.imageInput.addEventListener("change", async (event) => {
       const file = event.target.files && event.target.files[0];
       if (!file) return;
@@ -1817,23 +1817,25 @@
       }
     });
 
-    els.signatureImportInput.addEventListener("change", async (event) => {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-      try {
-        const imported = JSON.parse(await file.text());
-        const signatures = Array.isArray(imported) ? imported : imported.signatures;
-        if (!Array.isArray(signatures)) throw new Error("Expected an array or { signatures }.");
-        signatures.forEach(validateSignature);
-        state.signatures = signatures;
-        pushHistory("import signatures");
-        updateSignatureList();
-      } catch (error) {
-        alert(`Signature import failed: ${error.message}`);
-      } finally {
-        event.target.value = "";
-      }
-    });
+    if (els.signatureImportInput) {
+      els.signatureImportInput.addEventListener("change", async (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        try {
+          const imported = JSON.parse(await file.text());
+          const signatures = Array.isArray(imported) ? imported : imported.signatures;
+          if (!Array.isArray(signatures)) throw new Error("Expected an array or { signatures }.");
+          signatures.forEach(validateSignature);
+          state.signatures = signatures;
+          pushHistory("import signatures");
+          updateSignatureList();
+        } catch (error) {
+          alert(`Signature import failed: ${error.message}`);
+        } finally {
+          event.target.value = "";
+        }
+      });
+    }
 
     adjustmentIds.forEach((inputId) => {
       const input = $(inputId);
@@ -1888,7 +1890,7 @@
     canvas.addEventListener("pointercancel", onPointerUp);
     canvas.addEventListener("wheel", onWheel, { passive: false });
 
-    $("newProjectBtn").addEventListener("click", () => {
+    onClick("newProjectBtn", () => {
       if (!window.confirm("Start a new project? Unsaved in-memory data will be cleared.")) return;
       state.image = null;
       state.adjustments = defaultAdjustments();
@@ -1901,15 +1903,12 @@
       pushHistory("new project");
       updateAll();
     });
-    $("undoBtn").addEventListener("click", undo);
-    $("redoBtn").addEventListener("click", redo);
-    $("fitBtn").addEventListener("click", () => { fitToScreen(); draw(); });
-    $("actualBtn").addEventListener("click", actualSize);
-    $("resetViewBtn").addEventListener("click", () => { fitToScreen(); draw(); });
-    $("resetImageBtn").addEventListener("click", resetToOriginal);
-    $("resetAdjustmentsBtn").addEventListener("click", resetToOriginal);
-    $("applyCropBtn").addEventListener("click", applyCropRegion);
-    $("clearCropBtn").addEventListener("click", () => {
+    onClick("undoBtn", undo);
+    onClick("redoBtn", redo);
+    onClick("resetImageBtn", resetToOriginal);
+    onClick("resetAdjustmentsBtn", resetToOriginal);
+    onClick("applyCropBtn", applyCropRegion);
+    onClick("clearCropBtn", () => {
       state.adjustments.crop = null;
       state.cropRegion = null;
       syncAdjustmentInputs();
@@ -1918,19 +1917,19 @@
       pushHistory("clear crop");
       updateAll();
     });
-    $("deleteSelectedBtn").addEventListener("click", deleteSelected);
-    $("signatureFromAnnotationsBtn").addEventListener("click", makeSignatureFromAnnotations);
-    $("overlayFromSignatureBtn").addEventListener("click", () => addOverlayFromSignature(selectedSignature()));
-    $("bringForwardBtn").addEventListener("click", () => reorderSelected(1.5));
-    $("sendBackwardBtn").addEventListener("click", () => reorderSelected(-1.5));
-    $("exportProjectBtn").addEventListener("click", exportProject);
-    $("exportPngBtn").addEventListener("click", exportPng);
-    $("exportAnnotationsBtn").addEventListener("click", () => downloadJson(state.annotations, `sage-annotations-${timestamp()}.json`));
-    $("exportSignaturesBtn").addEventListener("click", () => downloadJson({ signatures: state.signatures }, `sage-signatures-${timestamp()}.json`));
-    $("exportCsvBtn").addEventListener("click", exportCsv);
-    $("compareBtn").addEventListener("click", compareSignatures);
-    $("saveSignatureBtn").addEventListener("click", saveSignatureFromEditor);
-    $("newSignatureBtn").addEventListener("click", () => {
+    onClick("deleteSelectedBtn", deleteSelected);
+    onClick("signatureFromAnnotationsBtn", makeSignatureFromAnnotations);
+    onClick("overlayFromSignatureBtn", () => addOverlayFromSignature(selectedSignature()));
+    onClick("bringForwardBtn", () => reorderSelected(1.5));
+    onClick("sendBackwardBtn", () => reorderSelected(-1.5));
+    onClick("exportProjectBtn", exportProject);
+    onClick("exportPngBtn", exportPng);
+    onClick("exportAnnotationsBtn", () => downloadJson(state.annotations, `sage-annotations-${timestamp()}.json`));
+    onClick("exportSignaturesBtn", () => downloadJson({ signatures: state.signatures }, `sage-signatures-${timestamp()}.json`));
+    onClick("exportCsvBtn", exportCsv);
+    onClick("compareBtn", compareSignatures);
+    onClick("saveSignatureBtn", saveSignatureFromEditor);
+    onClick("newSignatureBtn", () => {
       const signature = {
         id: id("sig"),
         name: "New signature",
@@ -1946,10 +1945,10 @@
       state.signatures.push(signature);
       pushHistory("new signature");
       updateSignatureList();
-      els.signatureSelect.value = signature.id;
+      if (els.signatureSelect) els.signatureSelect.value = signature.id;
       updateSignatureEditor();
     });
-    $("duplicateSignatureBtn").addEventListener("click", () => {
+    onClick("duplicateSignatureBtn", () => {
       const sig = selectedSignature();
       if (!sig) return;
       const copy = clone(sig);
@@ -1958,18 +1957,18 @@
       state.signatures.push(copy);
       pushHistory("duplicate signature");
       updateSignatureList();
-      els.signatureSelect.value = copy.id;
+      if (els.signatureSelect) els.signatureSelect.value = copy.id;
       updateSignatureEditor();
     });
-    $("deleteSignatureBtn").addEventListener("click", () => {
+    onClick("deleteSignatureBtn", () => {
       const sig = selectedSignature();
       if (!sig) return;
       state.signatures = state.signatures.filter((item) => item.id !== sig.id);
       pushHistory("delete signature");
       updateSignatureList();
     });
-    els.signatureSearch.addEventListener("input", updateSignatureList);
-    els.signatureSelect.addEventListener("change", updateSignatureEditor);
+    if (els.signatureSearch) els.signatureSearch.addEventListener("input", updateSignatureList);
+    if (els.signatureSelect) els.signatureSelect.addEventListener("change", updateSignatureEditor);
 
     window.addEventListener("resize", resizeWorkspace);
     window.addEventListener("keydown", (event) => {
