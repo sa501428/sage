@@ -20,6 +20,9 @@
           <strong>SAGE</strong>
           <span>Signature Analysis for Gel-based Experiments</span>
         </div>
+        <div class="top-notice">
+          Runs locally in your browser. Images and analysis data are not uploaded, backed up, or transmitted.
+        </div>
         <nav class="toolbar" aria-label="Project actions">
           <button id="newProjectBtn" type="button" title="New project">+</button>
           <button id="undoBtn" type="button" title="Undo">↶</button>
@@ -30,7 +33,10 @@
             <input id="projectImportInput" type="file" accept="application/json,.json">
           </label>
         </nav>
-        <div class="privacy-chip" title="No network calls or server upload">Local only</div>
+        <div class="top-actions">
+          <button id="themeToggleBtn" type="button" title="Toggle dark mode">◐</button>
+          <div class="privacy-chip" title="No network calls or server upload">Local only</div>
+        </div>
       </header>
 
       <main class="workspace-grid">
@@ -72,12 +78,6 @@
               <span>Import overlay images</span>
             </label>
             <div id="overlayList" class="overlay-list"></div>
-            <div class="row">
-              <label class="inline-file">
-                Import set
-                <input id="overlaySetImportInput" type="file" accept="application/json,.json">
-              </label>
-            </div>
             <label>Opacity <input id="selectedOpacity" type="range" min="0" max="100" value="80"></label>
             <div class="grid-2">
               <label>X <input id="selectedX" type="number" step="1"></label>
@@ -99,20 +99,12 @@
         </aside>
 
         <section class="center-stage" aria-label="Canvas workspace">
-          <div class="notice">
-            SAGE runs locally in your browser. Images and analysis data are not uploaded, backed up, or transmitted. Save or export files manually if you want to keep them.
-          </div>
           <div class="canvas-frame">
             <canvas id="workspaceCanvas" width="1200" height="800" aria-label="Image analysis canvas"></canvas>
           </div>
           <div class="statusbar">
             <span id="cursorReadout">x -, y -</span>
             <span id="zoomReadout">100%</span>
-            <div class="layer-toggles">
-              <label><input id="showProcessed" type="checkbox" checked> Processed</label>
-              <label><input id="showAnnotations" type="checkbox" checked> Annotations</label>
-              <label><input id="showOverlays" type="checkbox" checked> Overlays</label>
-            </div>
           </div>
         </section>
       </main>

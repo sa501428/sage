@@ -49,7 +49,6 @@
   const els = {
     imageInput: $("imageInput"),
     overlayImageInput: $("overlayImageInput"),
-    overlaySetImportInput: $("overlaySetImportInput"),
     projectImportInput: $("projectImportInput"),
     signatureImportInput: $("signatureImportInput"),
     imageMeta: $("imageMeta"),
@@ -63,7 +62,8 @@
     annotationLabel: $("annotationLabel"),
     annotationColor: $("annotationColor"),
     cropMeta: $("cropMeta"),
-    overlayList: $("overlayList")
+    overlayList: $("overlayList"),
+    themeToggleBtn: $("themeToggleBtn")
   };
 
   const adjustmentIds = [
@@ -2048,6 +2048,22 @@
     }[char]));
   }
 
+  function applyTheme(mode) {
+    const dark = mode === "dark";
+    document.body.classList.toggle("dark-mode", dark);
+    if (els.themeToggleBtn) {
+      els.themeToggleBtn.textContent = dark ? "☼" : "◐";
+      els.themeToggleBtn.title = dark ? "Switch to light mode" : "Switch to dark mode";
+      els.themeToggleBtn.setAttribute("aria-pressed", String(dark));
+    }
+  }
+
+  function toggleTheme() {
+    const next = document.body.classList.contains("dark-mode") ? "light" : "dark";
+    localStorage.setItem("sage-theme", next);
+    applyTheme(next);
+  }
+
   function bindEvents() {
     const onClick = (idName, handler) => {
       const el = $(idName);
@@ -2082,20 +2098,6 @@
         event.target.value = "";
       }
     });
-
-    if (els.overlaySetImportInput) {
-      els.overlaySetImportInput.addEventListener("change", async (event) => {
-        const file = event.target.files && event.target.files[0];
-        if (!file) return;
-        try {
-          await importOverlaySet(file);
-        } catch (error) {
-          alert(`Overlay import failed: ${error.message}`);
-        } finally {
-          event.target.value = "";
-        }
-      });
-    }
 
     els.projectImportInput.addEventListener("change", async (event) => {
       const file = event.target.files && event.target.files[0];
@@ -2159,10 +2161,12 @@
     });
 
     ["showProcessed", "showAnnotations", "showOverlays"].forEach((idName) => {
-      $(idName).addEventListener("change", () => {
+      const input = $(idName);
+      if (!input) return;
+      input.addEventListener("change", () => {
         const key = idName.replace(/^show/, "");
         const normalized = key.charAt(0).toLowerCase() + key.slice(1);
-        state.layerVisibility[normalized] = $(idName).checked;
+        state.layerVisibility[normalized] = input.checked;
         draw();
       });
     });
@@ -2195,6 +2199,7 @@
       pushHistory("new project");
       updateAll();
     });
+    onClick("themeToggleBtn", toggleTheme);
     onClick("undoBtn", undo);
     onClick("redoBtn", redo);
     onClick("resetImageBtn", resetToOriginal);
@@ -2283,6 +2288,7 @@
   }
 
   function init() {
+    applyTheme(localStorage.getItem("sage-theme") || "light");
     bindEvents();
     syncAdjustmentInputs();
     updateSignatureList();
