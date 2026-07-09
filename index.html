@@ -66,28 +66,19 @@
           </section>
 
           <section class="panel">
-            <h2>Annotate</h2>
-            <div id="toolButtons" class="tool-grid">
-              <button data-tool="select" class="active" type="button" title="Select or move">↖</button>
-              <button data-tool="lane" type="button" title="Lane">║</button>
-              <button data-tool="band" type="button" title="Band">═</button>
-              <button data-tool="rect" type="button" title="Region">▭</button>
-              <button data-tool="line" type="button" title="Line">╱</button>
-              <button data-tool="label" type="button" title="Label">T</button>
-            </div>
-            <label>Annotation label <input id="annotationLabel" type="text" placeholder="Lane 1, Band A"></label>
-            <label>Color <input id="annotationColor" type="color" value="#16a34a"></label>
-            <div class="row">
-              <button id="deleteSelectedBtn" type="button">Delete</button>
-            </div>
-          </section>
-
-          <section class="panel">
             <h2>Reference Overlay</h2>
             <label class="file-picker secondary">
-              <input id="overlayImageInput" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml">
-              <span>Import overlay image</span>
+              <input id="overlayImageInput" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" multiple>
+              <span>Import overlay images</span>
             </label>
+            <div id="overlayList" class="overlay-list"></div>
+            <div class="row">
+              <label class="inline-file">
+                Import set
+                <input id="overlaySetImportInput" type="file" accept="application/json,.json">
+              </label>
+              <button id="exportOverlaySetBtn" type="button">Export set</button>
+            </div>
             <label>Opacity <input id="selectedOpacity" type="range" min="0" max="100" value="80"></label>
             <div class="grid-2">
               <label>X <input id="selectedX" type="number" step="1"></label>

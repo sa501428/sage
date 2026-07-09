@@ -49,6 +49,7 @@
   const els = {
     imageInput: $("imageInput"),
     overlayImageInput: $("overlayImageInput"),
+    overlaySetImportInput: $("overlaySetImportInput"),
     projectImportInput: $("projectImportInput"),
     signatureImportInput: $("signatureImportInput"),
     imageMeta: $("imageMeta"),
@@ -61,7 +62,8 @@
     signatureEditor: $("signatureEditor"),
     annotationLabel: $("annotationLabel"),
     annotationColor: $("annotationColor"),
-    cropMeta: $("cropMeta")
+    cropMeta: $("cropMeta"),
+    overlayList: $("overlayList")
   };
 
   const adjustmentIds = [
@@ -534,7 +536,10 @@
 
   function drawOverlays(targetCtx) {
     const overlays = [...state.overlays].sort((a, b) => a.zIndex - b.zIndex);
-    overlays.filter((overlay) => overlay.visible).forEach((overlay) => drawOverlay(targetCtx, overlay));
+    overlays.filter((overlay) => overlay.visible).forEach((overlay) => {
+      drawOverlay(targetCtx, overlay);
+      drawOverlayLabel(targetCtx, overlay);
+    });
   }
 
   function drawOverlay(targetCtx, overlay) {
@@ -551,6 +556,28 @@
       drawSignatureShape(targetCtx, overlay.signature, overlay.width, overlay.height);
     }
 
+    targetCtx.restore();
+  }
+
+  function drawOverlayLabel(targetCtx, overlay) {
+    const label = (overlay.name || "").trim();
+    if (!label) return;
+    const [corner] = overlayImageCorners(overlay);
+    const fontSize = Math.max(11 / state.view.zoom, 10);
+    const padX = 5 / state.view.zoom;
+    const padY = 3 / state.view.zoom;
+    targetCtx.save();
+    targetCtx.font = `700 ${fontSize}px system-ui, sans-serif`;
+    const textW = targetCtx.measureText(label).width;
+    const x = corner.x;
+    const y = Math.max(fontSize + padY * 2, corner.y - 6 / state.view.zoom);
+    targetCtx.fillStyle = "rgba(255,255,255,0.88)";
+    targetCtx.fillRect(x, y - fontSize - padY * 2, textW + padX * 2, fontSize + padY * 2);
+    targetCtx.strokeStyle = "rgba(37,111,130,0.85)";
+    targetCtx.lineWidth = 1 / state.view.zoom;
+    targetCtx.strokeRect(x, y - fontSize - padY * 2, textW + padX * 2, fontSize + padY * 2);
+    targetCtx.fillStyle = "#172026";
+    targetCtx.fillText(label, x + padX, y - padY);
     targetCtx.restore();
   }
 
@@ -680,8 +707,8 @@
       id: id("ann"),
       type,
       points: points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })),
-      label: els.annotationLabel.value.trim(),
-      color: els.annotationColor.value,
+      label: els.annotationLabel ? els.annotationLabel.value.trim() : "",
+      color: els.annotationColor ? els.annotationColor.value : "#16a34a",
       confidence: 1,
       visible: true,
       locked: false
@@ -874,6 +901,7 @@
       }
       syncSelectedControls();
       updateLayerList();
+      updateOverlayList();
       draw();
       canvas.setPointerCapture(event.pointerId);
       return;
@@ -881,8 +909,8 @@
 
     const clamped = clampPoint(point);
     if (state.tool === "label") {
-      const label = els.annotationLabel.value.trim() || window.prompt("Annotation label", "Label") || "Label";
-      els.annotationLabel.value = label;
+      const label = (els.annotationLabel && els.annotationLabel.value.trim()) || window.prompt("Annotation label", "Label") || "Label";
+      if (els.annotationLabel) els.annotationLabel.value = label;
       const ann = makeAnnotation("label", clamped, clamped);
       state.annotations.push(ann);
       state.selected = { kind: "annotation", id: ann.id };
@@ -990,7 +1018,11 @@
     return null;
   }
 
-  async function addOverlayImage(file) {
+  function labelFromFileName(fileName) {
+    return String(fileName || "Overlay").replace(/\.[^.]+$/, "");
+  }
+
+  async function addOverlayImage(file, options = {}) {
     const dataUrl = await fileToDataUrl(file);
     const img = await loadImageElement(dataUrl);
     const size = imageSize();
@@ -999,7 +1031,7 @@
       id: id("ovr"),
       type: "image",
       source: "upload",
-      name: file.name,
+      name: options.name || labelFromFileName(file.name),
       visible: true,
       locked: false,
       opacity: 0.8,
@@ -1019,7 +1051,22 @@
     };
     state.overlays.push(overlay);
     state.selected = { kind: "overlay", id: overlay.id };
-    pushHistory("add overlay image");
+    if (options.history !== false) {
+      pushHistory("add overlay image");
+      updateAll();
+    }
+    return overlay;
+  }
+
+  async function addOverlayImages(files) {
+    const list = [...files];
+    if (!list.length) return;
+    let last = null;
+    for (const file of list) {
+      last = await addOverlayImage(file, { history: false });
+    }
+    if (last) state.selected = { kind: "overlay", id: last.id };
+    pushHistory(list.length === 1 ? "add overlay image" : "add overlay images");
     updateAll();
   }
 
@@ -1098,6 +1145,59 @@
         draw();
       });
       els.layerList.appendChild(node);
+    });
+  }
+
+  function updateOverlayList() {
+    if (!els.overlayList) return;
+    els.overlayList.innerHTML = "";
+    const overlays = state.overlays.slice().sort((a, b) => b.zIndex - a.zIndex);
+    if (!overlays.length) {
+      els.overlayList.innerHTML = `<div class="meta-list">No overlays imported.</div>`;
+      return;
+    }
+
+    overlays.forEach((overlay) => {
+      const item = document.createElement("div");
+      item.className = `overlay-item ${state.selected && state.selected.kind === "overlay" && state.selected.id === overlay.id ? "selected" : ""}`;
+
+      const visible = document.createElement("input");
+      visible.type = "checkbox";
+      visible.checked = overlay.visible;
+      visible.title = "Toggle overlay";
+      visible.addEventListener("change", () => {
+        overlay.visible = visible.checked;
+        state.selected = { kind: "overlay", id: overlay.id };
+        pushHistory("toggle overlay");
+        updateAll();
+      });
+
+      const label = document.createElement("input");
+      label.type = "text";
+      label.value = overlay.name || "";
+      label.placeholder = "Overlay label";
+      label.addEventListener("input", () => {
+        overlay.name = label.value.trim();
+        draw();
+      });
+      label.addEventListener("change", () => {
+        overlay.name = label.value.trim() || "Overlay";
+        pushHistory("rename overlay");
+        updateAll();
+      });
+
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.textContent = "Edit";
+      edit.addEventListener("click", () => {
+        state.selected = { kind: "overlay", id: overlay.id };
+        syncSelectedControls();
+        updateOverlayList();
+        draw();
+      });
+
+      item.append(visible, label, edit);
+      els.overlayList.appendChild(item);
     });
   }
 
@@ -1418,11 +1518,20 @@
   }
 
   function drawOverlaysForExport(outCtx) {
-    state.overlays
-      .slice()
-      .sort((a, b) => a.zIndex - b.zIndex)
-      .filter((overlay) => overlay.visible)
-      .forEach((overlay) => drawOverlay(outCtx, overlay));
+    const prevZoom = state.view.zoom;
+    state.view.zoom = 1;
+    try {
+      state.overlays
+        .slice()
+        .sort((a, b) => a.zIndex - b.zIndex)
+        .filter((overlay) => overlay.visible)
+        .forEach((overlay) => {
+          drawOverlay(outCtx, overlay);
+          drawOverlayLabel(outCtx, overlay);
+        });
+    } finally {
+      state.view.zoom = prevZoom;
+    }
   }
 
   function drawAnnotationsForExport(outCtx) {
@@ -1464,6 +1573,21 @@
     const includeRaw = state.image && window.confirm("Include the raw uploaded image in the project JSON? This makes the file larger but allows reopening the project with the image.");
     const project = captureProject(includeRaw);
     downloadJson(project, `sage-project-${timestamp()}.json`);
+  }
+
+  function exportOverlaySet() {
+    if (!state.overlays.length) {
+      alert("There are no overlays to export.");
+      return;
+    }
+    downloadJson({
+      app: "SAGE",
+      type: "overlay-set",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      coordinateSystem: "base-image-pixels",
+      overlays: state.overlays.map(serializeOverlay)
+    }, `sage-overlays-${timestamp()}.json`);
   }
 
   function captureProject(includeRawImage = false) {
@@ -1529,6 +1653,41 @@
     fitToScreen();
     pushHistory("import project");
     updateAll();
+  }
+
+  async function importOverlaySet(file) {
+    if (!state.image) {
+      alert("Load a base image before importing overlays.");
+      return;
+    }
+    const text = await file.text();
+    const overlaySet = JSON.parse(text);
+    if (!overlaySet || overlaySet.app !== "SAGE" || overlaySet.type !== "overlay-set" || !Array.isArray(overlaySet.overlays)) {
+      throw new Error("Expected a SAGE overlay-set JSON file.");
+    }
+    const imported = await hydrateOverlays(overlaySet.overlays);
+    const baseZ = nextZ();
+    imported.forEach((overlay, index) => {
+      overlay.id = id("ovr");
+      overlay.name = overlay.name || `Overlay ${state.overlays.length + index + 1}`;
+      overlay.visible = overlay.visible !== false;
+      overlay.locked = Boolean(overlay.locked);
+      overlay.opacity = Number.isFinite(overlay.opacity) ? overlay.opacity : 0.8;
+      overlay.x = Number.isFinite(overlay.x) ? overlay.x : 0;
+      overlay.y = Number.isFinite(overlay.y) ? overlay.y : 0;
+      overlay.scaleX = Number.isFinite(overlay.scaleX) ? overlay.scaleX : 1;
+      overlay.scaleY = Number.isFinite(overlay.scaleY) ? overlay.scaleY : 1;
+      overlay.rotation = Number.isFinite(overlay.rotation) ? overlay.rotation : 0;
+      overlay.skewX = Number.isFinite(overlay.skewX) ? overlay.skewX : 0;
+      overlay.skewY = Number.isFinite(overlay.skewY) ? overlay.skewY : 0;
+      overlay.zIndex = baseZ + index;
+      state.overlays.push(overlay);
+    });
+    if (imported.length) {
+      state.selected = { kind: "overlay", id: imported[imported.length - 1].id };
+      pushHistory("import overlay set");
+      updateAll();
+    }
   }
 
   async function hydrateOverlays(overlays) {
@@ -1710,6 +1869,7 @@
     obj.locked = $("selectedLocked").checked;
     draw();
     updateLayerList();
+    updateOverlayList();
   }
 
   function deleteSelected() {
@@ -1736,6 +1896,24 @@
     updateAll();
   }
 
+  function cycleOverlaySelection(direction) {
+    if (!state.overlays.length) return;
+    const overlays = state.overlays.slice().sort((a, b) => a.zIndex - b.zIndex);
+    const currentIndex = state.selected && state.selected.kind === "overlay"
+      ? overlays.findIndex((overlay) => overlay.id === state.selected.id)
+      : -1;
+    const start = currentIndex >= 0 ? currentIndex : (direction > 0 ? -1 : 0);
+    const nextIndex = (start + direction + overlays.length) % overlays.length;
+    const selected = overlays[nextIndex];
+    state.overlays.forEach((overlay) => {
+      overlay.visible = overlay.id === selected.id;
+    });
+    state.selected = { kind: "overlay", id: selected.id };
+    syncSelectedControls();
+    updateOverlayList();
+    draw();
+  }
+
   function updateImageMeta() {
     if (!state.image) {
       els.imageMeta.textContent = "No image loaded";
@@ -1753,6 +1931,7 @@
     updateImageMeta();
     updateCropMeta();
     updateLayerList();
+    updateOverlayList();
     updateSignatureList();
     updateResults();
     syncSelectedControls();
@@ -1789,21 +1968,35 @@
     });
 
     els.overlayImageInput.addEventListener("change", async (event) => {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
+      const files = event.target.files ? [...event.target.files] : [];
+      if (!files.length) return;
       if (!state.image) {
         alert("Load a base image before adding overlays.");
         event.target.value = "";
         return;
       }
       try {
-        await addOverlayImage(file);
+        await addOverlayImages(files);
       } catch (error) {
         alert(error.message);
       } finally {
         event.target.value = "";
       }
     });
+
+    if (els.overlaySetImportInput) {
+      els.overlaySetImportInput.addEventListener("change", async (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        try {
+          await importOverlaySet(file);
+        } catch (error) {
+          alert(`Overlay import failed: ${error.message}`);
+        } finally {
+          event.target.value = "";
+        }
+      });
+    }
 
     els.projectImportInput.addEventListener("change", async (event) => {
       const file = event.target.files && event.target.files[0];
@@ -1923,6 +2116,7 @@
     onClick("bringForwardBtn", () => reorderSelected(1.5));
     onClick("sendBackwardBtn", () => reorderSelected(-1.5));
     onClick("exportProjectBtn", exportProject);
+    onClick("exportOverlaySetBtn", exportOverlaySet);
     onClick("exportPngBtn", exportPng);
     onClick("exportAnnotationsBtn", () => downloadJson(state.annotations, `sage-annotations-${timestamp()}.json`));
     onClick("exportSignaturesBtn", () => downloadJson({ signatures: state.signatures }, `sage-signatures-${timestamp()}.json`));
@@ -1972,6 +2166,7 @@
 
     window.addEventListener("resize", resizeWorkspace);
     window.addEventListener("keydown", (event) => {
+      const isTextInput = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) redo();
@@ -1979,8 +2174,11 @@
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") {
         event.preventDefault();
         redo();
+      } else if (!isTextInput && ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) {
+        event.preventDefault();
+        cycleOverlaySelection(event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1);
       } else if (event.key === "Delete" || event.key === "Backspace") {
-        if (document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+        if (isTextInput) return;
         deleteSelected();
       }
     });
@@ -1991,6 +2189,7 @@
     syncAdjustmentInputs();
     updateSignatureList();
     updateLayerList();
+    updateOverlayList();
     updateResults();
     resizeWorkspace();
     pushHistory("initial");
