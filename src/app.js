@@ -1022,6 +1022,65 @@
     return String(fileName || "Overlay").replace(/\.[^.]+$/, "");
   }
 
+  function overlayVisualTransform(overlay) {
+    return {
+      x: overlay.x,
+      y: overlay.y,
+      displayWidth: overlay.width * overlay.scaleX,
+      displayHeight: overlay.height * overlay.scaleY,
+      rotation: overlay.rotation || 0,
+      skewX: overlay.skewX || 0,
+      skewY: overlay.skewY || 0,
+      opacity: overlay.opacity
+    };
+  }
+
+  function applyOverlayVisualTransform(overlay, transform) {
+    if (!overlay || !transform) return;
+    overlay.x = transform.x;
+    overlay.y = transform.y;
+    overlay.scaleX = transform.displayWidth / Math.max(overlay.width, 1);
+    overlay.scaleY = transform.displayHeight / Math.max(overlay.height, 1);
+    overlay.rotation = transform.rotation || 0;
+    overlay.skewX = transform.skewX || 0;
+    overlay.skewY = transform.skewY || 0;
+    overlay.opacity = Number.isFinite(transform.opacity) ? transform.opacity : overlay.opacity;
+  }
+
+  function activeOverlay() {
+    if (state.selected && state.selected.kind === "overlay") {
+      const selected = state.overlays.find((overlay) => overlay.id === state.selected.id);
+      if (selected) return selected;
+    }
+    return state.overlays.find((overlay) => overlay.visible) || state.overlays[0] || null;
+  }
+
+  function ensureSingleActiveOverlay() {
+    const overlay = activeOverlay();
+    if (!overlay) return;
+    state.overlays.forEach((item) => {
+      item.visible = item.id === overlay.id;
+    });
+    state.selected = { kind: "overlay", id: overlay.id };
+  }
+
+  function activateOverlay(overlayId, options = {}) {
+    const target = state.overlays.find((overlay) => overlay.id === overlayId);
+    if (!target) return;
+    const source = activeOverlay();
+    if (options.preserveTransform !== false && source && source.id !== target.id) {
+      applyOverlayVisualTransform(target, overlayVisualTransform(source));
+    }
+    state.overlays.forEach((overlay) => {
+      overlay.visible = overlay.id === target.id;
+    });
+    state.selected = { kind: "overlay", id: target.id };
+    if (options.history) pushHistory("switch overlay");
+    syncSelectedControls();
+    updateOverlayList();
+    draw();
+  }
+
   async function addOverlayImage(file, options = {}) {
     const dataUrl = await fileToDataUrl(file);
     const img = await loadImageElement(dataUrl);
@@ -1032,7 +1091,7 @@
       type: "image",
       source: "upload",
       name: options.name || labelFromFileName(file.name),
-      visible: true,
+      visible: false,
       locked: false,
       opacity: 0.8,
       x: Math.round(size.width * 0.2),
@@ -1050,8 +1109,9 @@
       data: {}
     };
     state.overlays.push(overlay);
-    state.selected = { kind: "overlay", id: overlay.id };
+    if (options.visualTransform) applyOverlayVisualTransform(overlay, options.visualTransform);
     if (options.history !== false) {
+      activateOverlay(overlay.id, { preserveTransform: false });
       pushHistory("add overlay image");
       updateAll();
     }
@@ -1061,11 +1121,16 @@
   async function addOverlayImages(files) {
     const list = [...files];
     if (!list.length) return;
-    let last = null;
+    let transform = activeOverlay()
+      ? overlayVisualTransform(activeOverlay())
+      : null;
+    let first = null;
     for (const file of list) {
-      last = await addOverlayImage(file, { history: false });
+      const overlay = await addOverlayImage(file, { history: false, visualTransform: transform });
+      if (!first) first = overlay;
+      if (!transform) transform = overlayVisualTransform(overlay);
     }
-    if (last) state.selected = { kind: "overlay", id: last.id };
+    if (first) activateOverlay(first.id, { preserveTransform: false });
     pushHistory(list.length === 1 ? "add overlay image" : "add overlay images");
     updateAll();
   }
@@ -1162,14 +1227,12 @@
       item.className = `overlay-item ${state.selected && state.selected.kind === "overlay" && state.selected.id === overlay.id ? "selected" : ""}`;
 
       const visible = document.createElement("input");
-      visible.type = "checkbox";
+      visible.type = "radio";
+      visible.name = "activeOverlay";
       visible.checked = overlay.visible;
-      visible.title = "Toggle overlay";
+      visible.title = "Show this overlay";
       visible.addEventListener("change", () => {
-        overlay.visible = visible.checked;
-        state.selected = { kind: "overlay", id: overlay.id };
-        pushHistory("toggle overlay");
-        updateAll();
+        if (visible.checked) activateOverlay(overlay.id, { history: true });
       });
 
       const label = document.createElement("input");
@@ -1190,10 +1253,7 @@
       edit.type = "button";
       edit.textContent = "Edit";
       edit.addEventListener("click", () => {
-        state.selected = { kind: "overlay", id: overlay.id };
-        syncSelectedControls();
-        updateOverlayList();
-        draw();
+        activateOverlay(overlay.id);
       });
 
       item.append(visible, label, edit);
@@ -1647,6 +1707,7 @@
     state.signatures = project.signatures || createDefaultSignatures();
     state.results = project.results || [];
     state.overlays = await hydrateOverlays(project.overlays || []);
+    ensureSingleActiveOverlay();
     state.cropRegion = null;
     if (state.image) renderProcessedImage();
     syncAdjustmentInputs();
@@ -1665,12 +1726,13 @@
     if (!overlaySet || overlaySet.app !== "SAGE" || overlaySet.type !== "overlay-set" || !Array.isArray(overlaySet.overlays)) {
       throw new Error("Expected a SAGE overlay-set JSON file.");
     }
+    const currentTransform = activeOverlay() ? overlayVisualTransform(activeOverlay()) : null;
     const imported = await hydrateOverlays(overlaySet.overlays);
     const baseZ = nextZ();
     imported.forEach((overlay, index) => {
       overlay.id = id("ovr");
       overlay.name = overlay.name || `Overlay ${state.overlays.length + index + 1}`;
-      overlay.visible = overlay.visible !== false;
+      overlay.visible = false;
       overlay.locked = Boolean(overlay.locked);
       overlay.opacity = Number.isFinite(overlay.opacity) ? overlay.opacity : 0.8;
       overlay.x = Number.isFinite(overlay.x) ? overlay.x : 0;
@@ -1684,7 +1746,8 @@
       state.overlays.push(overlay);
     });
     if (imported.length) {
-      state.selected = { kind: "overlay", id: imported[imported.length - 1].id };
+      if (currentTransform) applyOverlayVisualTransform(imported[0], currentTransform);
+      activateOverlay(imported[0].id, { preserveTransform: false });
       pushHistory("import overlay set");
       updateAll();
     }
@@ -1752,6 +1815,7 @@
       state.signatures = clone(snapshot.signatures);
       state.results = clone(snapshot.results);
       state.selected = clone(snapshot.selected);
+      ensureSingleActiveOverlay();
       state.cropRegion = null;
       if (state.image) renderProcessedImage();
       syncAdjustmentInputs();
@@ -1841,6 +1905,7 @@
     ["selectedOpacity", "selectedX", "selectedY", "selectedScaleX", "selectedScaleY", "selectedRotation", "selectedSkewX", "selectedVisible", "selectedLocked"].forEach((idName) => {
       $(idName).disabled = !isOverlay;
     });
+    $("selectedVisible").disabled = true;
     if (!isOverlay) return;
     $("selectedOpacity").value = Math.round(obj.opacity * 100);
     $("selectedX").value = Math.round(obj.x);
@@ -1849,7 +1914,7 @@
     $("selectedScaleY").value = Number(obj.scaleY).toFixed(2);
     $("selectedRotation").value = Math.round(obj.rotation);
     $("selectedSkewX").value = Math.round(obj.skewX || 0);
-    $("selectedVisible").checked = obj.visible;
+    $("selectedVisible").checked = true;
     $("selectedLocked").checked = obj.locked;
   }
 
@@ -1865,8 +1930,11 @@
     obj.scaleY = isNaN(scaleY) ? 1 : scaleY;
     obj.rotation = Number($("selectedRotation").value) || 0;
     obj.skewX = Number($("selectedSkewX").value) || 0;
-    obj.visible = $("selectedVisible").checked;
+    state.overlays.forEach((overlay) => {
+      overlay.visible = overlay.id === obj.id;
+    });
     obj.locked = $("selectedLocked").checked;
+    $("selectedVisible").checked = true;
     draw();
     updateLayerList();
     updateOverlayList();
@@ -1877,7 +1945,21 @@
     if (state.selected.kind === "annotation") {
       state.annotations = state.annotations.filter((item) => item.id !== state.selected.id);
     } else if (state.selected.kind === "overlay") {
+      const removed = state.overlays.find((item) => item.id === state.selected.id);
+      const transform = removed ? overlayVisualTransform(removed) : null;
       state.overlays = state.overlays.filter((item) => item.id !== state.selected.id);
+      if (state.overlays.length) {
+        if (transform) applyOverlayVisualTransform(state.overlays[0], transform);
+        state.overlays.forEach((overlay, index) => {
+          overlay.visible = index === 0;
+        });
+        state.selected = { kind: "overlay", id: state.overlays[0].id };
+      } else {
+        state.selected = null;
+      }
+      pushHistory("delete selected");
+      updateAll();
+      return;
     }
     state.selected = null;
     pushHistory("delete selected");
@@ -1904,14 +1986,7 @@
       : -1;
     const start = currentIndex >= 0 ? currentIndex : (direction > 0 ? -1 : 0);
     const nextIndex = (start + direction + overlays.length) % overlays.length;
-    const selected = overlays[nextIndex];
-    state.overlays.forEach((overlay) => {
-      overlay.visible = overlay.id === selected.id;
-    });
-    state.selected = { kind: "overlay", id: selected.id };
-    syncSelectedControls();
-    updateOverlayList();
-    draw();
+    activateOverlay(overlays[nextIndex].id);
   }
 
   function updateImageMeta() {
