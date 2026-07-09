@@ -426,6 +426,10 @@ button:disabled {
   cursor: crosshair;
 }
 
+#workspaceCanvas.view-unlocked {
+  cursor: grab;
+}
+
 .statusbar {
   min-height: 36px;
   display: flex;

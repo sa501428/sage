@@ -28,6 +28,7 @@
     adjustments: defaultAdjustments(),
     overlayCrop: { left: 0, top: 0, right: 0, bottom: 0 },
     view: { zoom: 1, panX: 40, panY: 40 },
+    viewLocked: true,
     tool: "select",
     annotations: [],
     overlays: [],
@@ -65,6 +66,7 @@
     cropMeta: $("cropMeta"),
     overlayList: $("overlayList"),
     themeToggleBtn: $("themeToggleBtn"),
+    viewLockBtn: $("viewLockBtn"),
     overlayCropLeft: $("overlayCropLeft"),
     overlayCropTop: $("overlayCropTop"),
     overlayCropRight: $("overlayCropRight"),
@@ -383,7 +385,7 @@
     canvas.height = Math.max(1, Math.floor(rect.height * dpr));
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
-    fitToScreen();
+    if (state.viewLocked) fitToScreen();
     draw();
   }
 
@@ -401,6 +403,22 @@
     state.view.zoom = 1;
     state.view.panX = 40;
     state.view.panY = 40;
+    draw();
+  }
+
+  function updateViewLockControl() {
+    if (!els.viewLockBtn) return;
+    els.viewLockBtn.textContent = state.viewLocked ? "🔒" : "🔓";
+    els.viewLockBtn.title = state.viewLocked ? "Unlock view zoom/pan" : "Lock view zoom/pan";
+    els.viewLockBtn.classList.toggle("active", !state.viewLocked);
+    els.viewLockBtn.setAttribute("aria-pressed", String(!state.viewLocked));
+    canvas.classList.toggle("view-unlocked", !state.viewLocked);
+  }
+
+  function toggleViewLock() {
+    state.viewLocked = !state.viewLocked;
+    if (state.viewLocked) fitToScreen();
+    updateViewLockControl();
     draw();
   }
 
@@ -915,6 +933,10 @@
   function onPointerDown(event) {
     const point = screenToImage(event.clientX, event.clientY);
     if (event.button === 1 || event.altKey) {
+      if (!state.viewLocked) {
+        state.dragging = { type: "pan", sx: point.sx, sy: point.sy, panX: state.view.panX, panY: state.view.panY };
+        canvas.setPointerCapture(event.pointerId);
+      }
       return;
     }
 
@@ -947,6 +969,9 @@
             }
           } else {
             state.selected = null;
+            if (!state.viewLocked) {
+              state.dragging = { type: "pan", sx: point.sx, sy: point.sy, panX: state.view.panX, panY: state.view.panY };
+            }
           }
         }
       }
@@ -1052,6 +1077,14 @@
 
   function onWheel(event) {
     event.preventDefault();
+    if (state.viewLocked || !state.image) return;
+    const point = screenToImage(event.clientX, event.clientY);
+    const factor = event.deltaY < 0 ? 1.12 : 0.89;
+    const nextZoom = clamp(state.view.zoom * factor, 0.03, 30);
+    state.view.panX = point.sx - point.x * nextZoom;
+    state.view.panY = point.sy - point.y * nextZoom;
+    state.view.zoom = nextZoom;
+    draw();
   }
 
   function clampPoint(point) {
@@ -1769,8 +1802,10 @@
     state.overlays = await hydrateOverlays(project.overlays || []);
     ensureSingleActiveOverlay();
     state.cropRegion = null;
+    state.viewLocked = true;
     if (state.image) renderProcessedImage();
     syncAdjustmentInputs();
+    updateViewLockControl();
     fitToScreen();
     pushHistory("import project");
     updateAll();
@@ -2284,11 +2319,14 @@
       state.results = [];
       state.selected = null;
       state.cropRegion = null;
+      state.viewLocked = true;
       syncAdjustmentInputs();
+      updateViewLockControl();
       pushHistory("new project");
       updateAll();
     });
     onClick("themeToggleBtn", toggleTheme);
+    onClick("viewLockBtn", toggleViewLock);
     onClick("undoBtn", undo);
     onClick("redoBtn", redo);
     onClick("resetImageBtn", resetToOriginal);
@@ -2385,6 +2423,7 @@
   function init() {
     applyTheme(localStorage.getItem("sage-theme") || "light");
     bindEvents();
+    updateViewLockControl();
     syncAdjustmentInputs();
     syncOverlayCropInputs();
     updateSignatureList();
