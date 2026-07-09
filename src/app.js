@@ -42,7 +42,8 @@
       overlays: true
     },
     history: [],
-    historyIndex: -1
+    historyIndex: -1,
+    isRestoring: false
   };
 
   const els = {
@@ -322,7 +323,8 @@
   }
 
   function blurKernel(amount) {
-    const edge = amount * 0.12;
+    const a = clamp(amount, 0, 1);
+    const edge = a * 0.12;
     const center = 1 - edge * 8;
     return [edge, edge, edge, edge, center, edge, edge, edge, edge];
   }
@@ -336,8 +338,8 @@
   function convolve(imageData, kernel) {
     const { width, height, data } = imageData;
     const copy = new Uint8ClampedArray(data);
-    const side = 3;
-    const half = 1;
+    const side = Math.round(Math.sqrt(kernel.length));
+    const half = Math.floor(side / 2);
     for (let y = 0; y < height; y += 1) {
       for (let x = 0; x < width; x += 1) {
         const dst = (y * width + x) * 4;
@@ -515,6 +517,7 @@
       targetCtx.strokeRect(r.x, r.y, r.width, r.height);
       targetCtx.globalAlpha = 0.08;
       targetCtx.fillRect(r.x, r.y, r.width, r.height);
+      targetCtx.globalAlpha = 1;
     } else if (annotation.type === "label") {
       const label = annotation.label || "Label";
       targetCtx.font = `${Math.max(12 / state.view.zoom, 11)}px system-ui, sans-serif`;
@@ -615,11 +618,11 @@
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
     return points.map((p) => {
-      const skewedX = p.x + Math.tan((overlay.skewX || 0) * Math.PI / 180) * p.y;
-      const sx = skewedX * overlay.scaleX;
+      const sx = p.x * overlay.scaleX;
       const sy = p.y * overlay.scaleY;
-      const x = overlay.x + sx * cos - sy * sin;
-      const y = overlay.y + sx * sin + sy * cos;
+      const skewedSX = sx + Math.tan((overlay.skewX || 0) * Math.PI / 180) * sy;
+      const x = overlay.x + skewedSX * cos - sy * sin;
+      const y = overlay.y + skewedSX * sin + sy * cos;
       return imageToScreen({ x, y });
     });
   }
@@ -649,7 +652,7 @@
     } else if (type === "label") {
       points = [start];
     }
-    return {
+    const ann = {
       id: id("ann"),
       type,
       points: points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })),
@@ -659,6 +662,8 @@
       visible: true,
       locked: false
     };
+    if (type === "band") ann.laneX = Math.round(start.x);
+    return ann;
   }
 
   function findAnnotationAt(point) {
@@ -710,12 +715,12 @@
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
     return points.map((p) => {
-      const skewedX = p.x + Math.tan((overlay.skewX || 0) * Math.PI / 180) * p.y;
-      const sx = skewedX * overlay.scaleX;
+      const sx = p.x * overlay.scaleX;
       const sy = p.y * overlay.scaleY;
+      const skewedSX = sx + Math.tan((overlay.skewX || 0) * Math.PI / 180) * sy;
       return {
-        x: overlay.x + sx * cos - sy * sin,
-        y: overlay.y + sx * sin + sy * cos
+        x: overlay.x + skewedSX * cos - sy * sin,
+        y: overlay.y + skewedSX * sin + sy * cos
       };
     });
   }
@@ -1088,20 +1093,12 @@
   }
 
   function nearestLaneForBand(ann, lanes, size) {
-    const y = ann.points[0].y;
-    const candidates = state.annotations.filter((item) => item.type === "lane" && item.visible);
-    if (!candidates.length) return lanes[0];
-    const bandMid = { x: size.width / 2, y };
-    let bestIndex = 0;
-    let bestDist = Infinity;
-    candidates.forEach((laneAnn, index) => {
-      const dist = distanceToSegment(bandMid, laneAnn.points[0], laneAnn.points[1]);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestIndex = index;
-      }
-    });
-    return lanes[Math.min(bestIndex, lanes.length - 1)];
+    if (!lanes.length) return { bands: [] };
+    const rawX = ann.laneX != null ? ann.laneX : ann.points[0].x;
+    const normX = size && size.width ? rawX / size.width : rawX;
+    return lanes.reduce((best, lane) =>
+      Math.abs(lane.xPosition - normX) < Math.abs(best.xPosition - normX) ? lane : best
+    , lanes[0]);
   }
 
   function compareSignatures() {
@@ -1189,8 +1186,11 @@
     const extraBands = Math.max(0, observedBandCount - matchedObserved.size);
     const denom = matchedBands + missingBands + extraBands * 0.35;
     const presence = denom === 0 ? 0 : matchedBands / denom;
-    const cosine = cosineSimilarity(signatureVector(observed), signatureVector(expected));
-    const score = Math.round((presence * 0.7 + cosine * 0.3) * 1000) / 1000;
+    const vecObs = signatureVector(observed);
+    const vecExp = signatureVector(expected);
+    const cosine = cosineSimilarity(vecObs, vecExp);
+    const xcorr = crossCorrelation(vecObs, vecExp);
+    const score = Math.round((presence * 0.6 + cosine * 0.2 + xcorr * 0.2) * 1000) / 1000;
     const confidence = Math.round(Math.max(0, Math.min(1, score - extraBands * 0.015)) * 1000) / 1000;
 
     return {
@@ -1240,6 +1240,29 @@
     return dot / (Math.sqrt(magA) * Math.sqrt(magB));
   }
 
+  function crossCorrelation(a, b) {
+    const n = Math.max(a.length, b.length);
+    const maxShift = Math.floor(n * 0.1);
+    let best = -Infinity;
+    let magA = 0;
+    let magB = 0;
+    for (let i = 0; i < n; i += 1) {
+      magA += (a[i] || 0) * (a[i] || 0);
+      magB += (b[i] || 0) * (b[i] || 0);
+    }
+    const norm = Math.sqrt(magA) * Math.sqrt(magB);
+    if (!norm) return 0;
+    for (let shift = -maxShift; shift <= maxShift; shift += 1) {
+      let dot = 0;
+      for (let i = 0; i < n; i += 1) {
+        const j = i + shift;
+        if (j >= 0 && j < n) dot += (a[i] || 0) * (b[j] || 0);
+      }
+      if (dot > best) best = dot;
+    }
+    return clamp(best / norm, 0, 1);
+  }
+
   function updateResults() {
     els.resultsList.innerHTML = "";
     if (!state.results.length) {
@@ -1279,14 +1302,15 @@
   }
 
   function drawAnnotationsForExport(outCtx) {
-    state.annotations
-      .filter((ann) => ann.visible)
-      .forEach((ann) => {
-        const prevZoom = state.view.zoom;
-        state.view.zoom = 1;
-        drawAnnotation(outCtx, ann, false);
-        state.view.zoom = prevZoom;
-      });
+    const prevZoom = state.view.zoom;
+    state.view.zoom = 1;
+    try {
+      state.annotations
+        .filter((ann) => ann.visible)
+        .forEach((ann) => drawAnnotation(outCtx, ann, false));
+    } finally {
+      state.view.zoom = prevZoom;
+    }
   }
 
   function downloadBlob(blob, filename) {
@@ -1371,7 +1395,7 @@
       alert("Project imported without raw image data. Upload the matching image to continue visual analysis.");
     }
     state.adjustments = { ...defaultAdjustments(), ...(project.adjustments || {}) };
-    state.annotations = project.annotations || [];
+    state.annotations = (project.annotations || []).map((ann) => ({ visible: true, locked: false, ...ann }));
     state.signatures = project.signatures || createDefaultSignatures();
     state.results = project.results || [];
     state.overlays = await hydrateOverlays(project.overlays || []);
@@ -1433,18 +1457,24 @@
   }
 
   async function restoreHistory(index) {
+    if (state.isRestoring) return;
     const snapshot = state.history[index];
     if (!snapshot) return;
-    state.adjustments = clone(snapshot.adjustments);
-    state.annotations = clone(snapshot.annotations);
-    state.overlays = await hydrateOverlays(snapshot.overlays);
-    state.signatures = clone(snapshot.signatures);
-    state.results = clone(snapshot.results);
-    state.selected = clone(snapshot.selected);
-    if (state.image) renderProcessedImage();
-    syncAdjustmentInputs();
-    updateAll();
-    updateUndoRedo();
+    state.isRestoring = true;
+    try {
+      state.adjustments = clone(snapshot.adjustments);
+      state.annotations = clone(snapshot.annotations);
+      state.overlays = await hydrateOverlays(snapshot.overlays);
+      state.signatures = clone(snapshot.signatures);
+      state.results = clone(snapshot.results);
+      state.selected = clone(snapshot.selected);
+      if (state.image) renderProcessedImage();
+      syncAdjustmentInputs();
+      updateAll();
+      updateUndoRedo();
+    } finally {
+      state.isRestoring = false;
+    }
   }
 
   function undo() {
@@ -1537,8 +1567,10 @@
     obj.opacity = Number($("selectedOpacity").value) / 100;
     obj.x = Number($("selectedX").value) || 0;
     obj.y = Number($("selectedY").value) || 0;
-    obj.scaleX = Number($("selectedScaleX").value) || 1;
-    obj.scaleY = Number($("selectedScaleY").value) || 1;
+    const scaleX = parseFloat($("selectedScaleX").value);
+    const scaleY = parseFloat($("selectedScaleY").value);
+    obj.scaleX = isNaN(scaleX) ? 1 : scaleX;
+    obj.scaleY = isNaN(scaleY) ? 1 : scaleY;
     obj.rotation = Number($("selectedRotation").value) || 0;
     obj.skewX = Number($("selectedSkewX").value) || 0;
     obj.visible = $("selectedVisible").checked;
@@ -1666,14 +1698,16 @@
 
     adjustmentIds.forEach((inputId) => {
       const input = $(inputId);
-      const eventName = input.type === "checkbox" || input.tagName === "SELECT" ? "change" : "input";
-      input.addEventListener(eventName, () => {
-        if (!state.image) return;
-        readAdjustmentsFromInputs();
-        renderProcessedImage();
-        draw();
-        updateImageMeta();
-      });
+      const isToggle = input.type === "checkbox" || input.tagName === "SELECT";
+      if (!isToggle) {
+        input.addEventListener("input", () => {
+          if (!state.image) return;
+          readAdjustmentsFromInputs();
+          renderProcessedImage();
+          draw();
+          updateImageMeta();
+        });
+      }
       input.addEventListener("change", () => {
         if (!state.image) return;
         readAdjustmentsFromInputs();
@@ -1822,7 +1856,7 @@
     pushHistory("initial");
     syncSelectedControls();
     if ("serviceWorker" in navigator && location.protocol !== "file:") {
-      navigator.serviceWorker.register("sw.js").catch(() => {});
+      navigator.serviceWorker.register("sw.js").catch((err) => console.warn("SW registration failed:", err));
     }
   }
 
