@@ -573,10 +573,10 @@
     const y = Math.max(fontSize + padY * 2, corner.y - 6 / state.view.zoom);
     targetCtx.fillStyle = "rgba(255,255,255,0.88)";
     targetCtx.fillRect(x, y - fontSize - padY * 2, textW + padX * 2, fontSize + padY * 2);
-    targetCtx.strokeStyle = "rgba(37,111,130,0.85)";
+    targetCtx.strokeStyle = overlay.flagged ? "rgba(184,91,43,0.95)" : "rgba(37,111,130,0.85)";
     targetCtx.lineWidth = 1 / state.view.zoom;
     targetCtx.strokeRect(x, y - fontSize - padY * 2, textW + padX * 2, fontSize + padY * 2);
-    targetCtx.fillStyle = "#172026";
+    targetCtx.fillStyle = overlay.flagged ? "#7c2d12" : "#172026";
     targetCtx.fillText(label, x + padX, y - padY);
     targetCtx.restore();
   }
@@ -1047,6 +1047,13 @@
     overlay.opacity = Number.isFinite(transform.opacity) ? transform.opacity : overlay.opacity;
   }
 
+  function normalizeOverlayFootprint() {
+    const source = activeOverlay();
+    if (!source) return;
+    const transform = overlayVisualTransform(source);
+    state.overlays.forEach((overlay) => applyOverlayVisualTransform(overlay, transform));
+  }
+
   function activeOverlay() {
     if (state.selected && state.selected.kind === "overlay") {
       const selected = state.overlays.find((overlay) => overlay.id === state.selected.id);
@@ -1069,7 +1076,8 @@
     if (!target) return;
     const source = activeOverlay();
     if (options.preserveTransform !== false && source && source.id !== target.id) {
-      applyOverlayVisualTransform(target, overlayVisualTransform(source));
+      const transform = overlayVisualTransform(source);
+      state.overlays.forEach((overlay) => applyOverlayVisualTransform(overlay, transform));
     }
     state.overlays.forEach((overlay) => {
       overlay.visible = overlay.id === target.id;
@@ -1093,6 +1101,7 @@
       name: options.name || labelFromFileName(file.name),
       visible: false,
       locked: false,
+      flagged: false,
       opacity: 0.8,
       x: Math.round(size.width * 0.2),
       y: Math.round(size.height * 0.2),
@@ -1224,7 +1233,7 @@
 
     overlays.forEach((overlay) => {
       const item = document.createElement("div");
-      item.className = `overlay-item ${state.selected && state.selected.kind === "overlay" && state.selected.id === overlay.id ? "selected" : ""}`;
+      item.className = `overlay-item ${state.selected && state.selected.kind === "overlay" && state.selected.id === overlay.id ? "selected" : ""} ${overlay.flagged ? "flagged" : ""}`;
 
       const visible = document.createElement("input");
       visible.type = "radio";
@@ -1249,14 +1258,27 @@
         updateAll();
       });
 
-      const edit = document.createElement("button");
-      edit.type = "button";
-      edit.textContent = "Edit";
-      edit.addEventListener("click", () => {
-        activateOverlay(overlay.id);
+      const flag = document.createElement("button");
+      flag.type = "button";
+      flag.className = "overlay-flag";
+      flag.textContent = overlay.flagged ? "Flagged" : "Flag";
+      flag.title = "Mark for review";
+      flag.addEventListener("click", () => {
+        overlay.flagged = !overlay.flagged;
+        pushHistory("flag overlay");
+        updateAll();
       });
 
-      item.append(visible, label, edit);
+      const trash = document.createElement("button");
+      trash.type = "button";
+      trash.className = "overlay-trash";
+      trash.textContent = "Trash";
+      trash.title = "Delete overlay";
+      trash.addEventListener("click", () => {
+        removeOverlay(overlay.id);
+      });
+
+      item.append(visible, label, flag, trash);
       els.overlayList.appendChild(item);
     });
   }
@@ -1635,21 +1657,6 @@
     downloadJson(project, `sage-project-${timestamp()}.json`);
   }
 
-  function exportOverlaySet() {
-    if (!state.overlays.length) {
-      alert("There are no overlays to export.");
-      return;
-    }
-    downloadJson({
-      app: "SAGE",
-      type: "overlay-set",
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      coordinateSystem: "base-image-pixels",
-      overlays: state.overlays.map(serializeOverlay)
-    }, `sage-overlays-${timestamp()}.json`);
-  }
-
   function captureProject(includeRawImage = false) {
     return {
       app: "SAGE",
@@ -1734,6 +1741,7 @@
       overlay.name = overlay.name || `Overlay ${state.overlays.length + index + 1}`;
       overlay.visible = false;
       overlay.locked = Boolean(overlay.locked);
+      overlay.flagged = Boolean(overlay.flagged);
       overlay.opacity = Number.isFinite(overlay.opacity) ? overlay.opacity : 0.8;
       overlay.x = Number.isFinite(overlay.x) ? overlay.x : 0;
       overlay.y = Number.isFinite(overlay.y) ? overlay.y : 0;
@@ -1757,6 +1765,7 @@
     const hydrated = [];
     for (const overlay of overlays) {
       const copy = clone(overlay);
+      copy.flagged = Boolean(copy.flagged);
       if (copy.type === "image" && copy.dataUrl) {
         try {
           copy.imageElement = await loadImageElement(copy.dataUrl);
@@ -1940,25 +1949,40 @@
     updateOverlayList();
   }
 
+  function removeOverlay(overlayId) {
+    const removed = state.overlays.find((item) => item.id === overlayId);
+    if (!removed) return;
+    const wasActive = state.selected && state.selected.kind === "overlay" && state.selected.id === overlayId;
+    const transform = activeOverlay() ? overlayVisualTransform(activeOverlay()) : overlayVisualTransform(removed);
+    const ordered = state.overlays.slice().sort((a, b) => a.zIndex - b.zIndex);
+    const removedIndex = ordered.findIndex((overlay) => overlay.id === overlayId);
+    state.overlays = state.overlays.filter((item) => item.id !== overlayId);
+
+    if (!state.overlays.length) {
+      state.selected = null;
+    } else if (wasActive || !activeOverlay()) {
+      const remaining = state.overlays.slice().sort((a, b) => a.zIndex - b.zIndex);
+      const next = remaining[Math.min(Math.max(removedIndex, 0), remaining.length - 1)];
+      applyOverlayVisualTransform(next, transform);
+      state.overlays.forEach((overlay) => {
+        overlay.visible = overlay.id === next.id;
+      });
+      state.selected = { kind: "overlay", id: next.id };
+    } else {
+      ensureSingleActiveOverlay();
+      normalizeOverlayFootprint();
+    }
+
+    pushHistory("delete overlay");
+    updateAll();
+  }
+
   function deleteSelected() {
     if (!state.selected) return;
     if (state.selected.kind === "annotation") {
       state.annotations = state.annotations.filter((item) => item.id !== state.selected.id);
     } else if (state.selected.kind === "overlay") {
-      const removed = state.overlays.find((item) => item.id === state.selected.id);
-      const transform = removed ? overlayVisualTransform(removed) : null;
-      state.overlays = state.overlays.filter((item) => item.id !== state.selected.id);
-      if (state.overlays.length) {
-        if (transform) applyOverlayVisualTransform(state.overlays[0], transform);
-        state.overlays.forEach((overlay, index) => {
-          overlay.visible = index === 0;
-        });
-        state.selected = { kind: "overlay", id: state.overlays[0].id };
-      } else {
-        state.selected = null;
-      }
-      pushHistory("delete selected");
-      updateAll();
+      removeOverlay(state.selected.id);
       return;
     }
     state.selected = null;
@@ -2191,7 +2215,6 @@
     onClick("bringForwardBtn", () => reorderSelected(1.5));
     onClick("sendBackwardBtn", () => reorderSelected(-1.5));
     onClick("exportProjectBtn", exportProject);
-    onClick("exportOverlaySetBtn", exportOverlaySet);
     onClick("exportPngBtn", exportPng);
     onClick("exportAnnotationsBtn", () => downloadJson(state.annotations, `sage-annotations-${timestamp()}.json`));
     onClick("exportSignaturesBtn", () => downloadJson({ signatures: state.signatures }, `sage-signatures-${timestamp()}.json`));

@@ -242,7 +242,7 @@ button:disabled {
 
 .overlay-item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: 6px;
   align-items: center;
   padding: 7px;
@@ -254,6 +254,11 @@ button:disabled {
 .overlay-item.selected {
   border-color: var(--strong);
   box-shadow: inset 3px 0 0 var(--strong);
+}
+
+.overlay-item.flagged {
+  background: #fff7ed;
+  border-color: #d58b57;
 }
 
 .overlay-item input[type="text"] {
@@ -269,6 +274,14 @@ button:disabled {
 .overlay-item button {
   min-height: 30px;
   padding: 4px 8px;
+}
+
+.overlay-item .overlay-flag {
+  color: #7c2d12;
+}
+
+.overlay-item .overlay-trash {
+  color: var(--danger);
 }
 
 .row,
