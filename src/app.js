@@ -67,6 +67,7 @@
     overlayList: $("overlayList"),
     themeToggleBtn: $("themeToggleBtn"),
     viewLockBtn: $("viewLockBtn"),
+    fitViewBtn: $("fitViewBtn"),
     overlayCropLeft: $("overlayCropLeft"),
     overlayCropTop: $("overlayCropTop"),
     overlayCropRight: $("overlayCropRight"),
@@ -393,10 +394,16 @@
     const img = activeImageCanvas();
     if (!img) return;
     const rect = frame.getBoundingClientRect();
+    if (rect.width <= 1 || rect.height <= 1) return;
     const zoom = Math.min(rect.width / img.width, rect.height / img.height) * 0.92;
     state.view.zoom = clamp(zoom, 0.03, 20);
     state.view.panX = (rect.width - img.width * state.view.zoom) / 2;
     state.view.panY = (rect.height - img.height * state.view.zoom) / 2;
+  }
+
+  function fitViewToWindow() {
+    fitToScreen();
+    draw();
   }
 
   function actualSize() {
@@ -454,6 +461,15 @@
     if (!img) {
       drawEmptyState(width, height);
       return;
+    }
+
+    if (state.viewLocked) {
+      const imageOffscreen = state.view.zoom <= 0 ||
+        state.view.panX > width ||
+        state.view.panY > height ||
+        state.view.panX + img.width * state.view.zoom < 0 ||
+        state.view.panY + img.height * state.view.zoom < 0;
+      if (imageOffscreen) fitToScreen();
     }
 
     ctx.save();
@@ -2256,7 +2272,7 @@
         if (!state.image) return;
         readAdjustmentsFromInputs();
         renderProcessedImage();
-        fitToScreen();
+        if (state.viewLocked) fitToScreen();
         pushHistory("adjust image");
         updateAll();
       });
@@ -2327,6 +2343,11 @@
     });
     onClick("themeToggleBtn", toggleTheme);
     onClick("viewLockBtn", toggleViewLock);
+    onClick("fitViewBtn", () => {
+      state.viewLocked = true;
+      updateViewLockControl();
+      fitViewToWindow();
+    });
     onClick("undoBtn", undo);
     onClick("redoBtn", redo);
     onClick("resetImageBtn", resetToOriginal);
@@ -2343,7 +2364,7 @@
       state.cropRegion = null;
       syncAdjustmentInputs();
       renderProcessedImage();
-      fitToScreen();
+      if (state.viewLocked) fitToScreen();
       pushHistory("clear crop");
       updateAll();
     });

@@ -59,6 +59,7 @@ body.dark-mode {
 html,
 body {
   height: 100%;
+  overflow: hidden;
 }
 
 body {
@@ -102,9 +103,11 @@ button:disabled {
 }
 
 .app-shell {
-  min-height: 100%;
+  height: 100dvh;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto 1fr;
+  overflow: hidden;
 }
 
 .topbar {
@@ -194,6 +197,8 @@ button:disabled {
 
 .workspace-grid {
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
   display: grid;
   grid-template-columns: 330px minmax(360px, 1fr);
   gap: 12px;
