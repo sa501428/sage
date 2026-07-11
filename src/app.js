@@ -2211,9 +2211,28 @@
 
   function toggleTheme() {
     const next = document.body.classList.contains("dark-mode") ? "light" : "dark";
-    localStorage.setItem("sage-theme", next);
     applyTheme(next);
     draw();
+  }
+
+  function clearLegacyBrowserPersistence() {
+    try {
+      window.localStorage && localStorage.removeItem("sage-theme");
+    } catch (_) {
+      // Storage access can be blocked by browser privacy settings.
+    }
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.getRegistrations()
+        .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+        .catch((err) => console.warn("Legacy service worker cleanup failed:", err));
+    }
+
+    if ("caches" in window) {
+      caches.keys()
+        .then((keys) => Promise.all(keys.filter((key) => key.startsWith("sage-")).map((key) => caches.delete(key))))
+        .catch((err) => console.warn("Legacy cache cleanup failed:", err));
+    }
   }
 
   function bindEvents() {
@@ -2469,7 +2488,8 @@
   }
 
   function init() {
-    applyTheme(localStorage.getItem("sage-theme") || "light");
+    clearLegacyBrowserPersistence();
+    applyTheme("light");
     bindEvents();
     updateViewLockControl();
     syncAdjustmentInputs();
@@ -2481,9 +2501,6 @@
     resizeWorkspace();
     pushHistory("initial");
     syncSelectedControls();
-    if ("serviceWorker" in navigator && location.protocol !== "file:") {
-      navigator.serviceWorker.register("sw.js").catch((err) => console.warn("SW registration failed:", err));
-    }
   }
 
   init();
