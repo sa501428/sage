@@ -1,4 +1,4 @@
-const CACHE_NAME = "sage-static-v11";
+const CACHE_NAME = "sage-static-v12";
 const ASSETS = [
   "./",
   "./index.html",

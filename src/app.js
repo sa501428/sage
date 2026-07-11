@@ -6,6 +6,7 @@
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   const frame = document.querySelector(".canvas-frame");
   const DPR = () => window.devicePixelRatio || 1;
+  const cssVar = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
 
   const defaultAdjustments = () => ({
     brightness: 0,
@@ -471,7 +472,7 @@
     const height = canvas.height / dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "#dfe5e9";
+    ctx.fillStyle = cssVar("--canvas") || "#dfe5e9";
     ctx.fillRect(0, 0, width, height);
 
     const img = activeImageCanvas();
@@ -2212,6 +2213,7 @@
     const next = document.body.classList.contains("dark-mode") ? "light" : "dark";
     localStorage.setItem("sage-theme", next);
     applyTheme(next);
+    draw();
   }
 
   function bindEvents() {
