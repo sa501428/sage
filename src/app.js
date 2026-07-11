@@ -12,7 +12,9 @@
     contrast: 0,
     gamma: 1,
     saturation: 1,
-    grayscale: false,
+    toneMap: false,
+    toneMapMin: "#000000",
+    toneMapMax: "#ffffff",
     invert: false,
     sharpen: 0,
     denoise: 0,
@@ -82,7 +84,9 @@
     "sharpen",
     "denoise",
     "backgroundSubtract",
-    "grayscale",
+    "toneMap",
+    "toneMapMin",
+    "toneMapMax",
     "invert"
   ];
 
@@ -284,6 +288,8 @@
     const gammaInv = 1 / gamma;
     const avg = bg > 0 ? averageLuminance(data) : 0;
     const subtract = avg * (bg / 100) * 0.85;
+    const minColor = hexToRgb(a.toneMapMin, { r: 0, g: 0, b: 0 });
+    const maxColor = hexToRgb(a.toneMapMax, { r: 255, g: 255, b: 255 });
 
     for (let i = 0; i < data.length; i += 4) {
       let r = data[i];
@@ -305,10 +311,11 @@
       b = 255 * Math.pow(clamp(b, 0, 255) / 255, gammaInv);
 
       const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      if (a.grayscale) {
-        r = lum;
-        g = lum;
-        b = lum;
+      if (a.toneMap) {
+        const t = clamp(lum, 0, 255) / 255;
+        r = minColor.r + (maxColor.r - minColor.r) * t;
+        g = minColor.g + (maxColor.g - minColor.g) * t;
+        b = minColor.b + (maxColor.b - minColor.b) * t;
       } else if (saturation !== 1) {
         r = lum + (r - lum) * saturation;
         g = lum + (g - lum) * saturation;
@@ -326,6 +333,16 @@
       data[i + 2] = clamp(b, 0, 255);
     }
     return imageData;
+  }
+
+  function hexToRgb(value, fallback) {
+    const hex = String(value || "").trim().replace(/^#/, "");
+    if (!/^[0-9a-fA-F]{6}$/.test(hex)) return fallback;
+    return {
+      r: parseInt(hex.slice(0, 2), 16),
+      g: parseInt(hex.slice(2, 4), 16),
+      b: parseInt(hex.slice(4, 6), 16)
+    };
   }
 
   function averageLuminance(data) {
@@ -1810,7 +1827,11 @@
     } else if (project.image) {
       alert("Project imported without raw image data. Upload the matching image to continue visual analysis.");
     }
-    state.adjustments = { ...defaultAdjustments(), ...(project.adjustments || {}) };
+    const importedAdjustments = project.adjustments || {};
+    state.adjustments = { ...defaultAdjustments(), ...importedAdjustments };
+    if (importedAdjustments.grayscale && importedAdjustments.toneMap == null) {
+      state.adjustments.toneMap = true;
+    }
     state.overlayCrop = { left: 0, top: 0, right: 0, bottom: 0, ...(project.overlayCrop || {}) };
     state.annotations = (project.annotations || []).map((ann) => ({ visible: true, locked: false, ...ann }));
     state.signatures = project.signatures || createDefaultSignatures();
@@ -1967,7 +1988,9 @@
     $("sharpen").value = Math.round(a.sharpen);
     $("denoise").value = Math.round(a.denoise);
     $("backgroundSubtract").value = Math.round(a.backgroundSubtract);
-    $("grayscale").checked = a.grayscale;
+    $("toneMap").checked = Boolean(a.toneMap);
+    $("toneMapMin").value = a.toneMapMin || "#000000";
+    $("toneMapMax").value = a.toneMapMax || "#ffffff";
     $("invert").checked = a.invert;
     updateCropMeta();
   }
@@ -1980,7 +2003,9 @@
     state.adjustments.sharpen = Number($("sharpen").value);
     state.adjustments.denoise = Number($("denoise").value);
     state.adjustments.backgroundSubtract = Number($("backgroundSubtract").value);
-    state.adjustments.grayscale = $("grayscale").checked;
+    state.adjustments.toneMap = $("toneMap").checked;
+    state.adjustments.toneMapMin = $("toneMapMin").value || "#000000";
+    state.adjustments.toneMapMax = $("toneMapMax").value || "#ffffff";
     state.adjustments.invert = $("invert").checked;
     state.adjustments.flipX = false;
     state.adjustments.flipY = false;

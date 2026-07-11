@@ -68,8 +68,12 @@
             <label>Denoise <input id="denoise" type="range" min="0" max="100" value="0"></label>
             <label>Background <input id="backgroundSubtract" type="range" min="0" max="100" value="0"></label>
             <div class="switch-row">
-              <label><input id="grayscale" type="checkbox"> Grayscale</label>
+              <label><input id="toneMap" type="checkbox"> Tone map</label>
               <label><input id="invert" type="checkbox"> Invert</label>
+            </div>
+            <div class="grid-2">
+              <label>Min color <input id="toneMapMin" type="color" value="#000000"></label>
+              <label>Max color <input id="toneMapMax" type="color" value="#ffffff"></label>
             </div>
           </section>
 
