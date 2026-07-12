@@ -8,6 +8,17 @@ SAGE is an interactive application for analyzing gel electrophoresis images. The
 
 The system is designed to support both manual expert interpretation and automated pattern matching.
 
+## Desktop Builds
+
+SAGE can be built as a small native desktop application without Electron.
+
+The desktop host is C++/Objective-C++ and embeds the existing local web app in the operating system webview:
+
+* macOS: Cocoa + WKWebView.
+* Windows: Win32 + Microsoft Edge WebView2.
+
+Build instructions and security notes are in [desktop/README.md](desktop/README.md). GitHub Actions packaging is defined in [.github/workflows/desktop.yml](.github/workflows/desktop.yml).
+
 ---
 
 # Primary Workflow
